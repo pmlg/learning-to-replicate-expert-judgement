@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "qwen-chess-rl"
+version = "0.1.0"
+description = "Train Qwen-8B to play chess via SFT + GRPO with interactive web app"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "accelerate>=0.25.0",
+    "peft>=0.7.0",
+    "bitsandbytes>=0.41.0",
+    "datasets>=2.16.0",
+    "huggingface-hub>=0.20.0",
+    "python-chess>=1.999",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "tqdm>=4.66.0",
+    "wandb>=0.16.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "python-multipart>=0.0.6",
+    "sse-starlette>=1.8.0",
+    "aiofiles>=23.2.0",
+    "httpx>=0.25.0",
+    "docker>=6.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.5.0",
+    "ipython>=8.18.0",
+    "jupyter>=1.0.0",
+    "notebook>=7.0.0",
+]
+train = [
+    "deepspeed>=0.12.0",
+    "flash-attn>=2.3.0",
+    "xformers>=0.0.23",
+    "trl>=0.7.0",
+    "vllm>=0.3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["qwen_chess_rl*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

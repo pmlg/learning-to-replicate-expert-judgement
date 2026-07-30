@@ -1,0 +1,90 @@
+version: "3.8"
+
+services:
+  # === Web Application ===
+  web:
+    build:
+      context: .
+      target: full
+    ports:
+      - "8000:8000"
+    environment:
+      - QWEN_CHESS_CHECKPOINT=/app/checkpoints/sft/final
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./data:/app/data
+    command: uvicorn qwen_chess_rl.web.backend.main:app --host 0.0.0.0 --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # === SFT Training ===
+  train-sft:
+    build:
+      context: .
+      target: training
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+    command: qwen_chess_rl.training.sft.train
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - train
+
+  # === GRPO RL Training ===
+  train-grpo:
+    build:
+      context: .
+      target: training
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+    command: qwen_chess_rl.training.rl.grpo
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - train
+
+  # === Evaluation ===
+  evaluate:
+    build:
+      context: .
+      target: training
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./evaluation_results:/app/evaluation_results
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    command: qwen_chess_rl.evaluation.benchmark checkpoints/sft/final
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - eval
