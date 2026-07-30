@@ -452,7 +452,7 @@ Detailed documentation is available in the `docs/` directory:
 
 ## 📝 License
 
-MIT
+Proprietary — Copyright ©2026 DSAI. All Rights Reserved.
 
 ---
 
