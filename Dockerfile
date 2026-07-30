@@ -1,0 +1,52 @@
+# =============================================================================
+# Qwen Chess RL — Training & Web App Dockerfile
+# =============================================================================
+# Multi-stage build: training environment + web application
+
+# ---- Stage 1: Base environment ----
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    python3-venv \
+    git \
+    curl \
+    wget \
+    stockfish \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+
+# ---- Stage 2: Dependencies ----
+FROM base AS deps
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir -e ".[dev,train]" && \
+    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# ---- Stage 3: Full image ----
+FROM deps AS full
+
+COPY . .
+
+RUN pip install --no-cache-dir -e ".[dev,train]"
+
+EXPOSE 8000
+
+# Default: run the web app (override CMD for training)
+CMD ["uvicorn", "qwen_chess_rl.web.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ---- Stage 4: Training ----
+FROM deps AS training
+
+COPY . .
+RUN pip install --no-cache-dir -e ".[train]"
+
+ENTRYPOINT ["python", "-m"]
+CMD ["qwen_chess_rl.training.sft.train"]
