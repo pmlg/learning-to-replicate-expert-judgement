@@ -46,32 +46,23 @@ flowchart TD
 
 ### Training Pipeline
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Data Pipeline                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────┐  ┌────────┐ │
-│  │ Download │→ │ Filter   │→ │ Sample │→ │ Split  │ │
-│  └──────────┘  └──────────┘  └────────┘  └────────┘ │
-└─────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────┐
-│              SFT (Supervised Fine-Tuning)            │
-│  ┌──────────────────────────────────────────────┐   │
-│  │  Qwen-8B + QLoRA (lora_r=16, 4-bit)         │   │
-│  │  Input: FEN → Output: Best Move (UCI)        │   │
-│  │  Loss: CrossEntropy(next_token)              │   │
-│  └──────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────┐
-│           GRPO (Group Relative Policy Optimization)  │
-│  ┌──────────────────────────────────────────────┐   │
-│  │  For each position: generate 8 moves         │   │
-│  │  Evaluate via Stockfish reward function      │   │
-│  │  Normalize advantages within group           │   │
-│  │  Update policy (clipped surrogate + KL)      │   │
-│  └──────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph DataPipeline["Data Pipeline"]
+        A[Download] --> B[Filter] --> C[Sample] --> D[Split]
+    end
+    subgraph SFT["SFT - Supervised Fine-Tuning"]
+        E["Qwen-8B + QLoRA (lora_r=16, 4-bit)
+        Input: FEN --> Output: Best Move (UCI)
+        Loss: CrossEntropy(next_token)"]
+    end
+    subgraph GRPO["GRPO - Group Relative Policy Optimization"]
+        F["For each position: generate 8 moves
+        Evaluate via Stockfish reward function
+        Normalize advantages within group
+        Update policy (clipped surrogate + KL)"]
+    end
+    D --> E --> F
 ```
 
 ### Reward Function
