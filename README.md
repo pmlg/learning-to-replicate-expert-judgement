@@ -46,24 +46,36 @@ flowchart TD
 
 ### Training Pipeline
 
+![Training Pipeline](docs/images/training_pipeline.png)
+
+<details>
+<summary>View as Mermaid source</summary>
+
 ```mermaid
 flowchart TD
-    subgraph DataPipeline["Data Pipeline"]
-        A[Download] --> B[Filter] --> C[Sample] --> D[Split]
+    subgraph Data["Data Pipeline"]
+        D1[Download] --> D2[Filter] --> D3["Sample 2M positions"] --> D4["Train/Val/Test Split"]
     end
-    subgraph SFT["SFT - Supervised Fine-Tuning"]
-        E["Qwen-8B + QLoRA (lora_r=16, 4-bit)
-        Input: FEN --> Output: Best Move (UCI)
-        Loss: CrossEntropy(next_token)"]
+
+    subgraph SFT["SFT — Supervised Fine-Tuning"]
+        S1["Qwen-8B + QLoRA (lora_r=16, 4-bit)"]
+        S2["Input: FEN → Output: Best Move (UCI)"]
+        S3["Loss: CrossEntropy (next_token)"]
+        S1 --- S2 --- S3
     end
-    subgraph GRPO["GRPO - Group Relative Policy Optimization"]
-        F["For each position: generate 8 moves
-        Evaluate via Stockfish reward function
-        Normalize advantages within group
-        Update policy (clipped surrogate + KL)"]
+
+    subgraph GRPO["GRPO — Group Relative Policy Optimization"]
+        G1["Generate 8 moves per position"]
+        G2["Evaluate via Stockfish reward"]
+        G3["Normalize advantages within group"]
+        G4["Update policy (clipped surrogate + KL)"]
+        G1 --> G2 --> G3 --> G4
     end
-    D --> E --> F
+
+    Data --> SFT --> GRPO
 ```
+
+</details> (docs: replace ASCII training pipeline with Mermaid PNG)
 
 ### Reward Function
 
