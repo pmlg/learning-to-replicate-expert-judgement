@@ -65,3 +65,5 @@ secrets.yaml
 
 # OMC
 .omc/
+graphify-out/
+
