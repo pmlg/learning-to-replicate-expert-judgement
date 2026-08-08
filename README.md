@@ -7,6 +7,7 @@ This project implements an end-to-end training pipeline for fine-tuning **Qwen-8
 - 📥 **Data Pipeline** — Download, filter, and sample 2M chess positions from the [Lichess chess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) dataset
 - 🎯 **SFT Training** — Supervised fine-tuning with QLoRA to predict best moves from FEN positions
 - 🧠 **GRPO RL** — Group Relative Policy Optimization with Stockfish as the reward function
+- 🔬 **LUFFY Off-Policy Guidance** — Inject Stockfish expert traces into GRPO via importance-sampling corrections, preventing learning stalls without collapsing into imitation
 - 📊 **Evaluation Suite** — Benchmark against Stockfish, random players, and puzzle datasets
 - 🌐 **Web Application** — Interactive chess UI similar to the [Qwen Chess demo](https://qwen-chess.replit.app/)
 
@@ -369,9 +370,16 @@ qwen-chess-rl/
 │   │   │   ├── config.py       # QLoRA hyperparameters
 │   │   │   └── train.py        # SFT training loop
 │   │   └── rl/                 # Reinforcement Learning
-│   │       ├── config.py       # GRPO hyperparameters
+│   │       ├── config.py       # GRPO + LUFFY hyperparameters
 │   │       ├── reward.py       # Stockfish reward function
-│   │       └── grpo.py         # GRPO training loop
+│   │       ├── grpo.py         # GRPO training loop (LUFFY-aware)
+│   │       └── luffy/          # LUFFY off-policy guidance
+│   │           ├── schema.py        # Trace data schema
+│   │           ├── trace_generator.py # Stockfish trace generation
+│   │           ├── buffer.py        # Mixed experience buffer
+│   │           ├── is_weights.py    # IS weights & regularisation
+│   │           ├── training.py      # LUFFY training integration
+│   │           └── ablation.py      # Experiment runner
 │   ├── evaluation/
 │   │   ├── metrics.py          # Centipawn loss, legal %, Elo
 │   │   ├── stockfish_eval.py   # Play games vs Stockfish

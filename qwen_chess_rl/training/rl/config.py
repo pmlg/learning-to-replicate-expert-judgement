@@ -26,6 +26,16 @@ class GRPOConfig:
         save_steps: Save checkpoint every N steps.
         eval_steps: Evaluate playing strength every N steps.
         save_total_limit: Max checkpoints to retain.
+        use_luffy: Enable LUFFY off-policy guidance augmentation.
+        trace_ratio: Fraction of off-policy traces in each sampled batch.
+        is_clip: IS weight clipping range for off-policy corrections.
+        offpolicy_weight: Weight for the off-policy loss term.
+        trace_engine_depth: Stockfish depth for trace generation.
+        confidence_temp: Temperature for confidence-based anti-imitation weighting.
+        entropy_beta: Entropy bonus coefficient (encourages exploration).
+        min_eval_cp: Minimum Stockfish eval (centipawns) to accept a trace.
+        trace_path: Path to pre-generated traces (JSONL); empty = generate on-the-fly.
+        buffer_capacity: Experience buffer capacity for off-policy replay.
         seed: Random seed.
         report_to: Logging destination (wandb, tensorboard, none).
     """
@@ -57,6 +67,18 @@ class GRPOConfig:
     save_steps: int = 100
     eval_steps: int = 200
     save_total_limit: int = 5
+
+    # LUFFY off-policy guidance
+    use_luffy: bool = False  # Master toggle for LUFFY augmentation
+    trace_ratio: float = 0.3  # Fraction of off-policy traces in each batch
+    is_clip: float = 0.2  # IS weight clipping range
+    offpolicy_weight: float = 0.5  # Weight for off-policy loss term
+    trace_engine_depth: int = 18  # Stockfish depth for trace generation
+    confidence_temp: float = 1.0  # Temperature for confidence-based weighting
+    entropy_beta: float = 0.01  # Entropy bonus coefficient (anti-imitation)
+    min_eval_cp: int = 0  # Minimum Stockfish eval to accept a trace
+    trace_path: str = ""  # Path to pre-generated traces (JSONL); empty = generate on-the-fly
+    buffer_capacity: int = 10_000  # Experience buffer capacity
 
     # General
     seed: int = 42
