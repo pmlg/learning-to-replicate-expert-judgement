@@ -16,10 +16,10 @@ The data pipeline downloads the [Lichess chess position evaluations](https://hug
 
 ```bash
 # Full pipeline
-python -m qwen_chess_rl.data.download
+uv run python -m qwen_chess_rl.data.download
 
 # Custom options
-python -c "
+uv run python -c "
 from qwen_chess_rl.data.download import run_pipeline
 paths = run_pipeline(
     cache_dir='data/raw',

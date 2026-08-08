@@ -41,7 +41,7 @@ if ! command -v "$STOCKFISH_PATH" &> /dev/null; then
     echo "Install Stockfish: sudo apt-get install stockfish"
 fi
 
-python -m qwen_chess_rl.training.rl.grpo \
+uv run python -m qwen_chess_rl.training.rl.grpo \
     ${CONFIG:+--config "$CONFIG"} \
     --sft-checkpoint "$SFT_CHECKPOINT" \
     --steps "$STEPS" \

@@ -42,7 +42,7 @@ echo "Learning rate: $LR"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 
-python -m qwen_chess_rl.training.sft.train \
+uv run python -m qwen_chess_rl.training.sft.train \
     ${CONFIG:+--config "$CONFIG"} \
     --model-name "$MODEL_NAME" \
     --data-path "$DATA_PATH" \

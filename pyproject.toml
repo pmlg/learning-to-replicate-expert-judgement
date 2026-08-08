@@ -1,12 +1,12 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "qwen-chess-rl"
 version = "0.1.0"
 description = "Train Qwen-8B to play chess via SFT + GRPO with interactive web app"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 dependencies = [
     "torch>=2.1.0",
@@ -43,14 +43,21 @@ dev = [
 ]
 train = [
     "deepspeed>=0.12.0",
-    "flash-attn>=2.3.0",
     "xformers>=0.0.23",
     "trl>=0.7.0",
     "vllm>=0.3.0",
 ]
+# Requires CUDA toolkit (nvcc) + CUDA_HOME. Install separately after torch:
+#   uv pip install flash-attn --no-build-isolation
+flash = [
+    "flash-attn>=2.3.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["qwen_chess_rl*"]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
 
 [tool.ruff]
 target-version = "py310"
