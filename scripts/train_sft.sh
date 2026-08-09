@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 # Default values
 CONFIG=""
-MODEL_NAME="Qwen/Qwen3.5-9B"
+MODEL_NAME="Qwen/Qwen3-1.7B"
 DATA_PATH="data/processed"
 OUTPUT_DIR="checkpoints/sft"
 BATCH_SIZE=4
