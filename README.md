@@ -7,6 +7,7 @@ This project implements an end-to-end training pipeline for fine-tuning **Qwen-8
 - 📥 **Data Pipeline** — Download, filter, and sample 2M chess positions from the [Lichess chess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) dataset
 - 🎯 **SFT Training** — Supervised fine-tuning with QLoRA to predict best moves from FEN positions
 - 🧠 **GRPO RL** — Group Relative Policy Optimization with Stockfish as the reward function
+- 🔬 **LUFFY Off-Policy Guidance** — Inject Stockfish expert traces into GRPO via importance-sampling corrections, preventing learning stalls without collapsing into imitation
 - 📊 **Evaluation Suite** — Benchmark against Stockfish, random players, and puzzle datasets
 - 🌐 **Web Application** — Interactive chess UI similar to the [Qwen Chess demo](https://qwen-chess.replit.app/)
 
@@ -98,9 +99,11 @@ The GRPO reward function considers multiple chess-quality factors:
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10–3.12
+- [uv](https://docs.astral.sh/uv/) for dependency management
 - CUDA-compatible GPU (recommended: RTX 5090 for 8B model)
 - Stockfish chess engine (`sudo apt-get install stockfish`)
+- For optional FlashAttention: NVIDIA CUDA Toolkit with `nvcc` (not just the driver)
 
 ### Installation
 
@@ -110,15 +113,33 @@ git clone https://github.com/deep-science-ai/qwen-chess-rl.git
 cd qwen-chess-rl
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate
+uv venv
+source .venv/bin/activate
 
-# Install dependencies
-pip install -e ".[dev,train]"
+# Install dependencies (training works without flash-attn; uses SDPA)
+uv pip install -e ".[dev,train]"
 
-# Optional: Install PyTorch with CUDA support
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Optional: Install PyTorch with CUDA support (match your CUDA major version)
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu13.2
 ```
+
+#### Optional: FlashAttention
+
+`flash-attn` must be compiled against your installed CUDA toolkit. It is **not** part of `[train]` because builds fail without `nvcc` / `CUDA_HOME`.
+
+```bash
+# 1. Install CUDA toolkit (example: NVIDIA local installer / cuda-toolkit package)
+#    Confirm: nvcc --version
+# 2. Point builds at the toolkit
+export CUDA_HOME=/usr/local/cuda   # or your toolkit root
+export PATH="$CUDA_HOME/bin:$PATH"
+
+# 3. Build against the venv's torch (required)
+uv pip install flash-attn --no-build-isolation
+# or: uv pip install -e ".[flash]" --no-build-isolation
+```
+
+If `uv add flash-attn` fails with `No module named 'torch'`, use `--no-build-isolation` (or keep `[tool.uv.extra-build-dependencies]` for `flash-attn = ["torch"]`).
 
 ### Verify Setup
 
@@ -127,7 +148,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 stockfish --version
 
 # Check CUDA
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+uv run python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 ```
 
 ---
@@ -138,7 +159,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
 ```bash
 # Run the full pipeline: download → filter → sample 2M → split
-python -m qwen_chess_rl.data.download
+uv run python -m qwen_chess_rl.data.download
 ```
 
 This will:
@@ -399,9 +420,16 @@ qwen-chess-rl/
 │   │   │   ├── config.py       # QLoRA hyperparameters
 │   │   │   └── train.py        # SFT training loop
 │   │   └── rl/                 # Reinforcement Learning
-│   │       ├── config.py       # GRPO hyperparameters
+│   │       ├── config.py       # GRPO + LUFFY hyperparameters
 │   │       ├── reward.py       # Stockfish reward function
-│   │       └── grpo.py         # GRPO training loop
+│   │       ├── grpo.py         # GRPO training loop (LUFFY-aware)
+│   │       └── luffy/          # LUFFY off-policy guidance
+│   │           ├── schema.py        # Trace data schema
+│   │           ├── trace_generator.py # Stockfish trace generation
+│   │           ├── buffer.py        # Mixed experience buffer
+│   │           ├── is_weights.py    # IS weights & regularisation
+│   │           ├── training.py      # LUFFY training integration
+│   │           └── ablation.py      # Experiment runner
 │   ├── evaluation/
 │   │   ├── metrics.py          # Centipawn loss, legal %, Elo
 │   │   ├── stockfish_eval.py   # Play games vs Stockfish

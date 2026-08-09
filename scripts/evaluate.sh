@@ -30,7 +30,7 @@ echo ""
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export STOCKFISH_PATH=${STOCKFISH_PATH:-stockfish}
 
-python -m qwen_chess_rl.evaluation.benchmark \
+uv run python -m qwen_chess_rl.evaluation.benchmark \
     "$CHECKPOINT" \
     "$@"
 

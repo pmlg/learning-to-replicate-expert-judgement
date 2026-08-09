@@ -244,6 +244,11 @@ def grpo_loss(
 def train(cfg: GRPOConfig):
     """Run the full GRPO training loop.
 
+    When ``cfg.use_luffy`` is True, the loop is augmented with LUFFY
+    off-policy guidance: expert (Stockfish) traces are injected during
+    policy optimisation via importance-sampling corrections and
+    confidence-based regularisation.
+
     Args:
         cfg: GRPO training configuration.
     """
@@ -277,6 +282,19 @@ def train(cfg: GRPOConfig):
         collate_fn=collate_fn,
         num_workers=4,
     )
+
+    # --- LUFFY initialisation ---
+    luffy_buffer = None
+    if cfg.use_luffy:
+        from qwen_chess_rl.training.rl.luffy.training import prepare_luffy_buffer
+
+        logger.info("Initialising LUFFY off-policy guidance ...")
+        luffy_buffer = prepare_luffy_buffer(cfg)
+        logger.info(
+            "LUFFY enabled: %d off-policy traces in buffer (trace_ratio=%.2f)",
+            luffy_buffer.num_off_policy,
+            cfg.trace_ratio,
+        )
 
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -345,6 +363,24 @@ def train(cfg: GRPOConfig):
                 generated_ids, advantages, cfg,
             )
 
+            # --- LUFFY off-policy loss term ---
+            luffy_metrics = {}
+            if luffy_buffer is not None and luffy_buffer.num_off_policy > 0:
+                from qwen_chess_rl.training.rl.luffy.training import luffy_offpolicy_loss
+
+                luffy_result = luffy_offpolicy_loss(
+                    model, tokenizer, luffy_buffer, cfg, model.device,
+                )
+                luffy_loss_tensor = luffy_result.get("loss_tensor")
+                if luffy_loss_tensor is not None:
+                    loss = loss + luffy_loss_tensor
+                luffy_metrics = {
+                    "luffy_is_ratio": luffy_result.get("mean_is_ratio", 0.0),
+                    "luffy_confidence": luffy_result.get("mean_confidence_weight", 0.0),
+                    "luffy_num_traces": luffy_result.get("num_traces", 0),
+                    "luffy_raw_loss": luffy_result.get("raw_is_loss", 0.0),
+                }
+
             # Backward pass
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
@@ -357,11 +393,17 @@ def train(cfg: GRPOConfig):
             if global_step % cfg.logging_steps == 0:
                 all_rs = [r for group in all_rewards for r in group]
                 mean_reward = np.mean(all_rs) if all_rs else 0
-                logger.info(
-                    "Step %s/%s | Loss: %.4f | Mean Reward: %.2f",
-                    global_step, cfg.num_training_steps,
-                    loss.item(), mean_reward,
+                log_msg = (
+                    f"Step {global_step}/{cfg.num_training_steps} | "
+                    f"Loss: {loss.item():.4f} | Mean Reward: {mean_reward:.2f}"
                 )
+                if luffy_metrics:
+                    log_msg += (
+                        f" | IS ratio: {luffy_metrics['luffy_is_ratio']:.3f}"
+                        f" | Conf weight: {luffy_metrics['luffy_confidence']:.3f}"
+                        f" | Traces: {luffy_metrics['luffy_num_traces']}"
+                    )
+                logger.info(log_msg)
 
             # Save checkpoint
             if global_step % cfg.save_steps == 0:

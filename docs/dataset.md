@@ -17,11 +17,11 @@ The full dataset is ~40GB of Parquet across 20 shards on the Hub. By default the
 ## Usage
 
 ```bash
-# Full pipeline (streams by default)
-python -m qwen_chess_rl.data.download
+# Full pipeline
+uv run python -m qwen_chess_rl.data.download
 
 # Custom options
-python -c "
+uv run python -c "
 from qwen_chess_rl.data.download import run_pipeline
 paths = run_pipeline(
     cache_dir='data/raw',
