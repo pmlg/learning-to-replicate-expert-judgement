@@ -71,10 +71,14 @@ def tokenize_example(
         return_tensors=None,
     )
 
-    # Compute labels: mask out the prompt tokens (set to -100)
+    # Compute labels: mask out the prompt tokens and padding (set to -100)
     prompt_tokens = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     labels = tokens["input_ids"].copy()
     labels[:len(prompt_tokens)] = [-100] * len(prompt_tokens)
+    labels = [
+        -100 if mask == 0 else label
+        for label, mask in zip(labels, tokens["attention_mask"])
+    ]
 
     tokens["labels"] = labels
     return tokens

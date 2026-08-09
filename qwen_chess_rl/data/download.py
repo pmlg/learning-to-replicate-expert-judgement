@@ -1,9 +1,12 @@
 """Download, filter, and sample the Lichess chess position evaluation dataset."""
 
 import logging
+import os
 import random
 from pathlib import Path
 from typing import Optional
+
+os.environ.setdefault("USE_TORCH", "0")  # this pipeline is CPU-only; skip datasets' torch probing
 
 import datasets
 from tqdm.auto import tqdm
@@ -64,7 +67,7 @@ def download_dataset(
     split: str = "train",
     num_proc: int = 4,
 ) -> datasets.Dataset:
-    """Download the Lichess chess position evaluations dataset.
+    """Download the full Lichess chess position evaluations dataset.
 
     Args:
         cache_dir: Directory to cache the raw dataset.
@@ -102,7 +105,7 @@ def filter_positions(
     ds: datasets.Dataset,
     max_cp_loss: int = MAX_CP_LOSS,
     min_cp_loss: int = MIN_CP_LOSS,
-    validate_fen: bool = True,
+    validate_fen: bool = False,
     num_proc: int = 8,
 ) -> datasets.Dataset:
     """Apply quality filters to the raw dataset.
@@ -111,7 +114,9 @@ def filter_positions(
         ds: Raw HuggingFace dataset.
         max_cp_loss: Maximum centipawn loss to keep.
         min_cp_loss: Minimum centipawn loss to keep.
-        validate_fen: Whether to validate FEN strings via python-chess.
+        validate_fen: Whether to validate FEN strings via python-chess. Off by
+            default: on this dataset it rejects ~0 rows beyond the cp/mate
+            filter, yet costs far more time (full board parsing per row).
         num_proc: Number of parallel processes for filtering.
 
     Returns:
@@ -170,6 +175,91 @@ def sample_positions(
     ds = ds.select(range(n))
     logger.info("Sampled %s positions (seed=%s).", len(ds), seed)
     return ds
+
+
+def _list_shard_files() -> list[str]:
+    """List the dataset's Parquet shard filenames on the Hub."""
+    from huggingface_hub import HfApi
+
+    files = HfApi().list_repo_files(DATASET_NAME, repo_type="dataset")
+    return sorted(f for f in files if f.startswith("data/") and f.endswith(".parquet"))
+
+
+def sample_by_shards(
+    n: int = TARGET_SAMPLE_SIZE,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+    seed: int = SEED,
+    max_cp_loss: int = MAX_CP_LOSS,
+    min_cp_loss: int = MIN_CP_LOSS,
+    validate_fen: bool = False,
+    num_proc: int = 8,
+) -> datasets.Dataset:
+    """Download and filter Parquet shards one at a time until *n* positions are collected.
+
+    The dataset is split into ~20 Parquet shards (~2GB / ~48M rows each) on
+    the Hub. Downloading whole shards and filtering them locally — instead
+    of the full dataset or row-by-row remote streaming — keeps the download
+    small (usually just 1-2 shards for a multi-million row sample) while
+    filtering at full local multiprocessing speed.
+
+    Args:
+        n: Desired sample size (~2 million).
+        cache_dir: Directory to cache downloaded shards.
+        seed: Random seed controlling shard order.
+        max_cp_loss: Maximum centipawn loss to keep.
+        min_cp_loss: Minimum centipawn loss to keep.
+        validate_fen: Whether to validate FEN strings via python-chess. Off by
+            default; see :func:`filter_positions`.
+        num_proc: Number of parallel processes for filtering.
+
+    Returns:
+        A filtered dataset with at least *n* rows, or all available rows if
+        the whole dataset is exhausted first.
+    """
+    from huggingface_hub import hf_hub_download
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    shard_files = _list_shard_files()
+    order = list(range(len(shard_files)))
+    random.Random(seed).shuffle(order)
+
+    collected = []
+    total = 0
+    for i in order:
+        shard = shard_files[i]
+        logger.info("Downloading shard %s ...", shard)
+        local_path = hf_hub_download(
+            repo_id=DATASET_NAME,
+            repo_type="dataset",
+            filename=shard,
+            cache_dir=str(cache_dir),
+        )
+        shard_ds = datasets.load_dataset("parquet", data_files=local_path, split="train")
+        shard_ds = filter_positions(
+            shard_ds,
+            max_cp_loss=max_cp_loss,
+            min_cp_loss=min_cp_loss,
+            validate_fen=validate_fen,
+            num_proc=num_proc,
+        )
+        collected.append(shard_ds)
+        total += len(shard_ds)
+        logger.info(
+            "Collected %s/%s positions so far (%s shard(s) read).", total, n, len(collected)
+        )
+        if total >= n:
+            break
+    else:
+        logger.warning(
+            "Exhausted all %s shards; only %s positions available (requested %s).",
+            len(shard_files),
+            total,
+            n,
+        )
+
+    return datasets.concatenate_datasets(collected)
 
 
 def split_train_val_test(
@@ -250,23 +340,41 @@ def run_pipeline(
     target_size: int = TARGET_SAMPLE_SIZE,
     num_proc: int = 8,
     seed: int = SEED,
+    streaming: bool = True,
+    validate_fen: bool = False,
 ) -> dict[str, Path]:
     """Run the full download → filter → sample → split → save pipeline.
 
     Args:
-        cache_dir: Cache directory for raw data.
+        cache_dir: Cache directory for raw data (shards, when streaming).
         output_dir: Output directory for processed data.
         target_size: Number of positions to sample.
         num_proc: Parallel processes.
         seed: Random seed.
+        streaming: If True (default), download and filter Parquet shards one
+            at a time, stopping once `target_size` positions have been
+            collected — usually just 1-2 of the ~20 shards — instead of
+            downloading the full ~40GB dataset up front.
+        validate_fen: Whether to validate FEN strings via python-chess. Off by
+            default; see :func:`filter_positions`.
 
     Returns:
         Dictionary mapping split names to saved paths.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    raw = download_dataset(cache_dir=cache_dir, num_proc=num_proc)
-    filtered = filter_positions(raw, num_proc=num_proc)
+    if streaming:
+        filtered = sample_by_shards(
+            n=target_size,
+            cache_dir=cache_dir,
+            seed=seed,
+            validate_fen=validate_fen,
+            num_proc=num_proc,
+        )
+    else:
+        raw = download_dataset(cache_dir=cache_dir, num_proc=num_proc)
+        filtered = filter_positions(raw, num_proc=num_proc, validate_fen=validate_fen)
+
     sampled = sample_positions(filtered, n=target_size, seed=seed)
     train, val, test = split_train_val_test(sampled, seed=seed)
 

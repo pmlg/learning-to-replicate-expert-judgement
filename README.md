@@ -22,8 +22,10 @@ This project implements an end-to-end training pipeline for fine-tuning **Qwen-8
 - [Web Application](#web-application)
 - [Docker Deployment](#docker-deployment)
 - [Project Structure](#project-structure)
+- [Development](#development)
 - [Configuration](#configuration)
 - [Results](#results)
+- [References](#references)
 - [Citation](#citation)
 
 ---
@@ -140,7 +142,7 @@ python -m qwen_chess_rl.data.download
 ```
 
 This will:
-1. Download the Lichess chess position evaluations dataset (~100GB+ on disk)
+1. Stream the Lichess chess position evaluations dataset (full dataset is ~40GB; streaming only downloads as many shards as needed to fill the sample, typically a few GB)
 2. Filter positions by quality (max centipawn loss < 200, valid FEN)
 3. Sample ~2 million positions
 4. Split into train (98%), validation (1%), test (1%)
@@ -157,8 +159,20 @@ paths = run_pipeline(
     target_size=2_000_000,
     num_proc=8,
     seed=42,
+    streaming=True,      # set False to download the full ~40GB dataset up front
+    validate_fen=False,  # set True to also validate FEN strings via python-chess (slow, ~0 rows rejected)
 )
 ```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `cache_dir` | `data/raw` | Where downloaded shards (or the full dataset) are cached |
+| `output_dir` | `data/processed` | Where the final train/val/test splits are saved |
+| `target_size` | `2_000_000` | Number of positions to sample |
+| `num_proc` | `8` | Parallel processes for filtering |
+| `seed` | `42` | Random seed for shard order, shuffling, and splitting |
+| `streaming` | `True` | Download Parquet shards one at a time until enough positions are collected, instead of the full ~40GB dataset |
+| `validate_fen` | `False` | Validate FEN strings via python-chess. Costly (full board parsing per row) and rejects ~0 rows on this dataset, so it's off by default |
 
 ---
 
@@ -174,13 +188,26 @@ bash scripts/train_sft.sh
 
 # With custom options
 bash scripts/train_sft.sh \
-    --model Qwen/Qwen-8B \
+    --model Qwen/Qwen3.5-9B \
     --data data/processed \
     --output checkpoints/sft \
     --batch-size 4 \
     --lr 2e-4 \
     --max-steps 10000
 ```
+
+**Options** (`bash scripts/train_sft.sh [options]`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config PATH` | — | YAML config file (see [YAML Config](#yaml-config-advanced)) |
+| `--model NAME` | `Qwen/Qwen3.5-9B` | HuggingFace model identifier |
+| `--data PATH` | `data/processed` | Path to processed dataset |
+| `--output DIR` | `checkpoints/sft` | Checkpoint output directory |
+| `--batch-size N` | `4` | Per-device training batch size |
+| `--lr RATE` | `2e-4` | Peak learning rate |
+| `--max-steps N` | `-1` | Max training steps (`-1` = use epochs) |
+| `--no-wandb` | off | Disable Weights & Biases logging |
 
 **Configuration** (see `qwen_chess_rl/training/sft/config.py`):
 
@@ -213,6 +240,18 @@ bash scripts/train_grpo.sh \
     --lr 5e-6
 ```
 
+**Options** (`bash scripts/train_grpo.sh [options]`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config PATH` | — | YAML config file (see [YAML Config](#yaml-config-advanced)) |
+| `--sft-checkpoint PATH` | `checkpoints/sft/final` | SFT checkpoint to start RL from |
+| `--output DIR` | `checkpoints/rl` | RL checkpoint output directory |
+| `--steps N` | `1000` | Number of GRPO training steps |
+| `--lr RATE` | `5e-6` | Peak learning rate |
+
+Requires `STOCKFISH_PATH` (default `stockfish`) to point to a working Stockfish binary — the script warns if it can't find one.
+
 **Configuration** (see `qwen_chess_rl/training/rl/config.py`):
 
 | Parameter | Value | Description |
@@ -238,6 +277,17 @@ bash scripts/evaluate.sh checkpoints/sft/final
 bash scripts/evaluate.sh checkpoints/sft/final \
     --compare checkpoints/rl/checkpoint-500 checkpoints/rl/final
 ```
+
+**Options** (`bash scripts/evaluate.sh <checkpoint_path> [options]`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-dir DIR` | `evaluation_results` | Results directory |
+| `--stockfish-games N` | `20` | Games played vs Stockfish |
+| `--random-games N` | `10` | Games played vs a random-move baseline |
+| `--depth N` | `8` | Stockfish search depth |
+| `--temperature T` | `0.1` | Move sampling temperature |
+| `--compare CKPT ...` | — | Additional checkpoints to compare against |
 
 ### Metrics Reported
 
@@ -375,12 +425,43 @@ qwen-chess-rl/
 
 ---
 
+## 🛠 Development
+
+Install dev tools with `pip install -e ".[dev]"` (or `uv sync --extra dev`).
+
+### Linting (ruff)
+
+```bash
+ruff check .          # lint
+ruff check --fix .    # lint and auto-fix what's safe to fix
+ruff format .         # format code
+```
+
+Rules are configured in `[tool.ruff]` in `pyproject.toml` (target Python 3.10, 100-char lines, `E`/`F`/`I`/`N`/`W`/`UP` rule sets).
+
+### Tests (pytest)
+
+```bash
+pytest                    # run the test suite
+pytest --cov=qwen_chess_rl # with coverage
+```
+
+---
+
 ## ⚙️ Configuration
 
 ### Environment Variables
 
+```bash
+# Copy the template and fill in your own values
+cp .env.example .env
+```
+
+`.env` is loaded automatically (via `python-dotenv`) whenever `qwen_chess_rl` is imported, and is gitignored so real tokens never get committed.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `HF_TOKEN` | — | HuggingFace Hub token — raises API rate limits and speeds up dataset downloads |
 | `CUDA_VISIBLE_DEVICES` | `0` | GPU device IDs |
 | `QWEN_CHESS_CHECKPOINT` | — | Model checkpoint path for web app |
 | `STOCKFISH_PATH` | `stockfish` | Stockfish binary location |
@@ -437,6 +518,19 @@ Detailed documentation is available in the `docs/` directory:
 - [Evaluation](docs/evaluation.md)
 - [Deployment Guide](docs/deployment.md)
 - [Architecture Overview](docs/architecture.md)
+
+---
+
+## 📚 References
+
+Papers describing the core techniques this project implements:
+
+- Hu et al., 2021 — [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
+- Dettmers et al., 2023 — [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
+- Shao et al., 2024 — [DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models](https://arxiv.org/abs/2402.03300) (introduces GRPO)
+- Schulman et al., 2017 — [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347) (the clipped-surrogate objective GRPO builds on)
+- Qwen Team, Alibaba — [Qwen2 Technical Report](https://arxiv.org/abs/2407.10671)
+- Silver et al., 2017 — [Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm](https://arxiv.org/abs/1712.01815) (AlphaZero; broader context for RL-trained chess play)
 
 ---
 

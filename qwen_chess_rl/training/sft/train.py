@@ -146,9 +146,6 @@ def load_datasets(cfg: SFTConfig, tokenizer):
         desc="Tokenizing validation data",
     )
 
-    train_ds.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    val_ds.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-
     return train_ds, val_ds
 
 
@@ -194,9 +191,9 @@ def train(cfg: SFTConfig):
         gradient_checkpointing=cfg.gradient_checkpointing,
         optim=cfg.optim,
         seed=cfg.seed,
-        report_to=cfg.report_to if cfg.report_to != "none" else None,
+        report_to=cfg.report_to,
         logging_dir=str(output_dir / "logs"),
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_strategy="steps",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -219,7 +216,7 @@ def train(cfg: SFTConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     # Train
