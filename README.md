@@ -201,20 +201,31 @@ paths = run_pipeline(
 
 ### Stage 1: Supervised Fine-Tuning (SFT)
 
-Fine-tune Qwen-8B using QLoRA to predict the best move from FEN positions.
+Fine-tune Qwen using QLoRA to predict the best move from FEN positions.
+
+The full ~2M train set is **not required** for a useful LoRA run. By default the
+script uses a shuffled subset of **50k train / 2k val** examples. Pass
+`--max-train-samples -1` for the full dataset.
 
 ```bash
-# Default training
+# Default training (50k train / 2k val)
 bash scripts/train_sft.sh
+
+# Faster smoke test
+bash scripts/train_sft.sh --max-train-samples 5000 --max-eval-samples 500
+
+# Full dataset
+bash scripts/train_sft.sh --max-train-samples -1 --max-eval-samples -1
 
 # With custom options
 bash scripts/train_sft.sh \
-    --model Qwen/Qwen3.5-9B \
+    --model Qwen/Qwen3-1.7B \
     --data data/processed \
     --output checkpoints/sft \
     --batch-size 4 \
     --lr 2e-4 \
-    --max-steps 10000
+    --max-steps 10000 \
+    --max-train-samples 50000
 ```
 
 **Options** (`bash scripts/train_sft.sh [options]`):
@@ -222,12 +233,14 @@ bash scripts/train_sft.sh \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config PATH` | — | YAML config file (see [YAML Config](#yaml-config-advanced)) |
-| `--model NAME` | `Qwen/Qwen3.5-9B` | HuggingFace model identifier |
+| `--model NAME` | `Qwen/Qwen3-1.7B` | HuggingFace model identifier |
 | `--data PATH` | `data/processed` | Path to processed dataset |
 | `--output DIR` | `checkpoints/sft` | Checkpoint output directory |
 | `--batch-size N` | `4` | Per-device training batch size |
 | `--lr RATE` | `2e-4` | Peak learning rate |
 | `--max-steps N` | `-1` | Max training steps (`-1` = use epochs) |
+| `--max-train-samples N` | `50000` | Cap on training examples (`-1` = full set) |
+| `--max-eval-samples N` | `2000` | Cap on validation examples (`-1` = full set) |
 | `--no-wandb` | off | Disable Weights & Biases logging |
 
 **Configuration** (see `qwen_chess_rl/training/sft/config.py`):
@@ -242,6 +255,8 @@ bash scripts/train_sft.sh \
 | `learning_rate` | 2e-4 | Peak learning rate |
 | `optim` | `paged_adamw_8bit` | Memory-efficient optimizer |
 | `max_length` | 512 | Max sequence length |
+| `max_train_samples` | 50000 | Default training subset size |
+| `max_eval_samples` | 2000 | Default validation subset size |
 
 **Memory requirements:** ~24GB GPU RAM (QLoRA 4-bit, batch_size=4 on RTX 5090)
 
