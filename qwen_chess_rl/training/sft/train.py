@@ -122,6 +122,16 @@ def load_datasets(cfg: SFTConfig, tokenizer):
     train_ds = load_from_disk(str(data_path / "train"))
     val_ds = load_from_disk(str(data_path / "val"))
 
+    if cfg.max_train_samples > 0 and len(train_ds) > cfg.max_train_samples:
+        train_ds = train_ds.shuffle(seed=cfg.seed).select(range(cfg.max_train_samples))
+        logger.info("Using %d / full train examples", len(train_ds))
+    else:
+        logger.info("Using full train set (%d examples)", len(train_ds))
+
+    if cfg.max_eval_samples > 0 and len(val_ds) > cfg.max_eval_samples:
+        val_ds = val_ds.shuffle(seed=cfg.seed).select(range(cfg.max_eval_samples))
+        logger.info("Using %d / full val examples", len(val_ds))
+
     # Tokenize datasets
     def tokenize_fn(examples):
         return tokenize_example(
@@ -136,6 +146,7 @@ def load_datasets(cfg: SFTConfig, tokenizer):
         remove_columns=train_ds.column_names,
         batched=False,
         desc="Tokenizing training data",
+        load_from_cache_file=True,
     )
 
     logger.info("Tokenizing validation data ...")
@@ -144,9 +155,49 @@ def load_datasets(cfg: SFTConfig, tokenizer):
         remove_columns=val_ds.column_names,
         batched=False,
         desc="Tokenizing validation data",
+        load_from_cache_file=True,
     )
 
     return train_ds, val_ds
+
+
+def _disable_wandb(reason: str) -> str:
+    """Force Trainer away from wandb even if env still has a key."""
+    import os
+
+    os.environ["WANDB_MODE"] = "disabled"
+    os.environ["WANDB_DISABLED"] = "true"
+    logger.warning("%s; disabling wandb (report_to=none)", reason)
+    return "none"
+
+
+def resolve_report_to(report_to: str) -> str:
+    """Return a usable report_to, falling back when wandb auth is unavailable.
+
+    ``wandb.login()`` can return True when a key is present even if the key is
+    invalid; verify with the API before enabling Trainer's wandb callback.
+    """
+    if report_to != "wandb":
+        return report_to
+
+    import os
+
+    api_key = (os.environ.get("WANDB_API_KEY") or "").strip()
+    if not api_key:
+        return _disable_wandb("WANDB_API_KEY unset")
+
+    try:
+        import wandb
+
+        # Avoid interactive login prompts during training.
+        os.environ["WANDB_API_KEY"] = api_key
+        api = wandb.Api(api_key=api_key, timeout=15)
+        # Forces a real authenticated request; raises if the key is bad.
+        _ = api.viewer
+    except Exception as exc:
+        return _disable_wandb(f"wandb auth failed ({exc})")
+
+    return "wandb"
 
 
 def train(cfg: SFTConfig):
@@ -163,6 +214,8 @@ def train(cfg: SFTConfig):
     # Create output directory
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    report_to = resolve_report_to(cfg.report_to)
 
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(cfg)
@@ -191,7 +244,7 @@ def train(cfg: SFTConfig):
         gradient_checkpointing=cfg.gradient_checkpointing,
         optim=cfg.optim,
         seed=cfg.seed,
-        report_to=cfg.report_to,
+        report_to=report_to,
         logging_dir=str(output_dir / "logs"),
         eval_strategy="steps",
         save_strategy="steps",
@@ -242,6 +295,18 @@ def main():
     parser.add_argument("--batch-size", type=int, default=SFTConfig.batch_size)
     parser.add_argument("--lr", type=float, default=SFTConfig.learning_rate)
     parser.add_argument("--max-steps", type=int, default=SFTConfig.max_steps)
+    parser.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=SFTConfig.max_train_samples,
+        help="Cap training examples (-1 = full dataset)",
+    )
+    parser.add_argument(
+        "--max-eval-samples",
+        type=int,
+        default=SFTConfig.max_eval_samples,
+        help="Cap validation examples (-1 = full dataset)",
+    )
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     args = parser.parse_args()
 
@@ -267,6 +332,8 @@ def main():
         cfg.learning_rate = args.lr
     if args.max_steps:
         cfg.max_steps = args.max_steps
+    cfg.max_train_samples = args.max_train_samples
+    cfg.max_eval_samples = args.max_eval_samples
     if args.no_wandb:
         cfg.report_to = "none"
 

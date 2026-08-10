@@ -37,6 +37,8 @@ class SFTConfig:
         optim: Optimizer to use (e.g. 'paged_adamw_8bit').
         seed: Random seed.
         data_path: Path to processed dataset.
+        max_train_samples: Cap on training examples (-1 = use full set).
+        max_eval_samples: Cap on validation examples (-1 = use full set).
         max_length: Maximum sequence length.
         report_to: Logging destination (wandb, tensorboard, none).
     """
@@ -83,5 +85,8 @@ class SFTConfig:
     # Data
     seed: int = 42
     data_path: str = "data/processed"
+    # Full 2M is not required for a useful LoRA run; 50k is a strong default.
+    max_train_samples: int = 50_000
+    max_eval_samples: int = 2_000
     max_length: int = 512
-    report_to: str = "wandb"
+    report_to: str = "none"

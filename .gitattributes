@@ -1,0 +1,2 @@
+# Keep shell scripts Unix-native so bash on WSL/Linux does not see `\r`
+*.sh text eol=lf
