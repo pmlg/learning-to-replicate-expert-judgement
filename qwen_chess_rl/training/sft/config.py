@@ -69,7 +69,7 @@ class SFTConfig:
     lr_scheduler_type: str = "cosine"
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    num_train_epochs: int = 1
+    num_train_epochs: int = 4
     max_steps: int = -1  # -1 means use epochs
     logging_steps: int = 25
     save_steps: int = 500
@@ -85,8 +85,12 @@ class SFTConfig:
     # Data
     seed: int = 42
     data_path: str = "data/processed"
-    # Full 2M is not required for a useful LoRA run; 50k is a strong default.
-    max_train_samples: int = 50_000
+    # Use the full dataset — this task needs broad exposure to board
+    # patterns; a 50k slice (2.5% of 1.96M) left the model undertrained.
+    max_train_samples: int = 500_000
     max_eval_samples: int = 2_000
-    max_length: int = 512
+    # Real examples (prompt + move + EOS) are ~90 tokens; 512 wasted ~5.5x
+    # compute on padding every example to a fixed length. 128 covers actual
+    # content with margin and lets the full dataset run in the same budget.
+    max_length: int = 128
     report_to: str = "none"
