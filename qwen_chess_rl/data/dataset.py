@@ -15,6 +15,22 @@ MOVE_SEP = " -> "
 EOS_TOKEN = "<|im_end|>"
 
 
+def extract_best_move(example: dict) -> str:
+    """Extract the best UCI move from a dataset example.
+
+    Lichess position dumps store the Stockfish PV in ``line`` (space-separated
+    UCI moves). Older schemas may use ``move`` / ``bestmove``.
+    """
+    for key in ("move", "bestmove", "uci"):
+        value = example.get(key)
+        if value:
+            return str(value).strip().split()[0]
+    line = example.get("line")
+    if line:
+        return str(line).strip().split()[0]
+    return ""
+
+
 def format_fen_prompt(fen: str) -> str:
     """Format a FEN position as a prompt for the model.
 
@@ -49,7 +65,7 @@ def tokenize_example(
     """Tokenize a single chess position example for training.
 
     Args:
-        example: Dataset example with 'fen' and 'move' (or 'bestmove') keys.
+        example: Dataset example with 'fen' and a move in move/bestmove/line.
         tokenizer: HuggingFace tokenizer.
         max_length: Maximum sequence length.
 
@@ -57,7 +73,10 @@ def tokenize_example(
         Tokenized example with input_ids, attention_mask, and labels.
     """
     fen = str(example.get("fen", ""))
-    move = str(example.get("move", example.get("bestmove", "")))
+    move = extract_best_move(example)
+    if not move:
+        # Avoid training on empty assistant targets (teaches immediate EOS).
+        move = "0000"
 
     prompt = format_fen_prompt(fen)
     target = format_move_target(move)

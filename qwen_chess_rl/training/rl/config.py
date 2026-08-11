@@ -82,4 +82,4 @@ class GRPOConfig:
 
     # General
     seed: int = 42
-    report_to: str = "wandb"
+    report_to: str = "none"

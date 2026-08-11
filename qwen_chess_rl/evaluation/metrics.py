@@ -44,7 +44,9 @@ def compute_centipawn_loss(
         board.push(move)
         proposed_eval = evaluate_position_stockfish(board.fen(), stockfish_path, depth=depth)
         proposed_score = proposed_eval.get("score", 0)
-        return abs(best_score - proposed_score) if proposed_score is not None else -1.0
+        # proposed_score is relative to the opponent (side to move after the
+        # move); negate to compare in the same reference frame as best_score.
+        return max(0.0, best_score + proposed_score) if proposed_score is not None else -1.0
     except (ValueError, chess.IllegalMoveError):
         return 1000.0
 

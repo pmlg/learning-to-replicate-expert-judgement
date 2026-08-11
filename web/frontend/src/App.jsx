@@ -17,6 +17,7 @@ function App() {
   const [playerColor, setPlayerColor] = useState('white');
   const [isAiThinking, setIsAiThinking] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
+  const [modelName, setModelName] = useState('');
   const [error, setError] = useState('');
   const [temperature, setTemperature] = useState(0.1);
   const [fenInput, setFenInput] = useState('');
@@ -27,15 +28,27 @@ function App() {
       const response = await api.newGame(initialFen, color);
       setSessionId(response.session_id);
       setFen(response.fen);
-      setMoveHistory([]);
-      setIsGameOver(false);
-      setGameResult('');
+      setMoveHistory(response.move_history || (response.ai_move ? [response.ai_move] : []));
+      setIsGameOver(Boolean(response.is_game_over));
+      setGameResult(response.result || '');
       setLegalMoves(response.legal_moves || []);
       setPlayerColor(color);
       setError('');
-      setModelLoaded(true);
+      if (typeof response.model_loaded === 'boolean') {
+        setModelLoaded(response.model_loaded);
+      }
+      if (response.model_name) {
+        setModelName(response.model_name);
+      }
+      if (response.model_loaded === false) {
+        setError(
+          'Game started, but the model is not loaded. Restart the backend with QWEN_CHESS_CHECKPOINT=checkpoints/sft/final',
+        );
+      }
     } catch (err) {
-      setError('Failed to start new game: ' + err.message);
+      const detail = err.response?.data?.detail || err.message;
+      setError('Failed to start new game: ' + detail);
+      setModelLoaded(false);
     }
   }, []);
 
@@ -62,7 +75,8 @@ function App() {
         setIsAiThinking(false);
       }
     } catch (err) {
-      setError('Invalid move: ' + err.message);
+      const detail = err.response?.data?.detail || err.message;
+      setError('Move failed: ' + detail);
     } finally {
       setIsAiThinking(false);
     }
@@ -100,14 +114,26 @@ function App() {
 
   // Initialize on mount
   useEffect(() => {
+    api.health()
+      .then((h) => {
+        setModelLoaded(Boolean(h.model_loaded));
+        setModelName(h.model_name || '');
+      })
+      .catch(() => setModelLoaded(false));
     startNewGame('white');
   }, [startNewGame]);
+
+  const subtitle = modelName
+    ? `Play against ${modelName} fine-tuned for chess`
+    : modelLoaded
+      ? 'Play against your fine-tuned Qwen chess model'
+      : 'Backend online — set QWEN_CHESS_CHECKPOINT to load a model';
 
   return (
     <div className="app-container">
       <header className="app-header">
         <h1>♟ Qwen Chess</h1>
-        <p className="subtitle">Play against a Qwen-8B model fine-tuned for chess</p>
+        <p className="subtitle">{subtitle}</p>
       </header>
 
       <div className="main-content">
@@ -141,6 +167,7 @@ function App() {
             gameResult={gameResult}
             isGameOver={isGameOver}
             modelLoaded={modelLoaded}
+            modelName={modelName}
           />
 
           {error && (

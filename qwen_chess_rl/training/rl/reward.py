@@ -75,7 +75,7 @@ def evaluate_position_stockfish(
         return {"score": 0, "mate": None, "bestmove": None, "pv": []}
 
     try:
-        transport, engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
         board = chess.Board(fen)
         result = engine.analyse(
             board,
@@ -90,8 +90,12 @@ def evaluate_position_stockfish(
         pv = result.get("pv", [])
         bestmove = str(pv[0]) if pv else None
 
-        if score_obj.is_mate():
-            mate_in = score_obj.mate()
+        # PovScore itself has no .score()/.mate() — those live on the
+        # underlying Score, reached via .relative (relative to side to move).
+        relative_score = score_obj.relative
+
+        if relative_score.is_mate():
+            mate_in = relative_score.mate()
             return {
                 "score": 0 if mate_in is None else (10000 if mate_in > 0 else -10000),
                 "mate": mate_in,
@@ -99,7 +103,7 @@ def evaluate_position_stockfish(
                 "pv": [str(m) for m in pv],
             }
         else:
-            centipawns = score_obj.score()  # relative to side to move
+            centipawns = relative_score.score()  # relative to side to move
             return {
                 "score": centipawns,
                 "mate": None,
@@ -200,7 +204,10 @@ def compute_reward(
         board.pop()
 
         proposed_score = proposed_eval.get("score", 0)
-        cp_loss = abs(sf_score - proposed_score)
+        # proposed_score is relative to the opponent (side to move after our
+        # move was pushed) — negate to compare in the same reference frame
+        # as sf_score before summing.
+        cp_loss = max(0.0, sf_score + proposed_score)
         cp_reward = -min(cp_loss / 100.0, abs(MAX_CP_PENALTY))
         reward_breakdown["centipawn_score"] = cp_reward
         total_reward += cp_reward

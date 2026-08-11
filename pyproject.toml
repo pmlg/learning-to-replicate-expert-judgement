@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qwen-chess-rl"
 version = "0.1.0"
-description = "Train Qwen-8B to play chess via SFT + GRPO with interactive web app"
+description = "Train Qwen (default Qwen3-1.7B) to play chess via SFT + GRPO with interactive web app"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "torch>=2.1.0",

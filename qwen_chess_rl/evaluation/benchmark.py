@@ -20,21 +20,42 @@ logger = logging.getLogger(__name__)
 def load_model_for_eval(checkpoint_path: str):
     """Load a model for evaluation (inference mode).
 
+    Supports full checkpoints and PEFT/LoRA adapter directories.
+
     Args:
         checkpoint_path: Path to the model checkpoint.
 
     Returns:
         (model, tokenizer) tuple in eval mode.
     """
-    logger.info("Loading model from %s for evaluation ...", checkpoint_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        checkpoint_path,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-    )
-    model.eval()
+    import json
 
+    ckpt = Path(checkpoint_path)
+    adapter_cfg_path = ckpt / "adapter_config.json"
+    logger.info("Loading model from %s for evaluation ...", checkpoint_path)
+
+    if adapter_cfg_path.exists():
+        with open(adapter_cfg_path) as f:
+            base_name = json.load(f).get("base_model_name_or_path") or "Qwen/Qwen3-1.7B"
+        logger.info("PEFT adapter detected; base model: %s", base_name)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_name,
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(base_model, str(ckpt))
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            checkpoint_path,
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+
+    model.eval()
     tokenizer = AutoTokenizer.from_pretrained(
         checkpoint_path,
         trust_remote_code=True,
@@ -118,9 +139,11 @@ def run_full_benchmark(
 
         test_ds = load_from_disk(str(test_path))
         positions = []
+        from qwen_chess_rl.data.dataset import extract_best_move
+
         for example in test_ds.select(range(min(1000, len(test_ds)))):
             fen = example.get("fen", "")
-            move = example.get("move", example.get("bestmove", ""))
+            move = extract_best_move(example)
             if fen and move:
                 positions.append((fen, move))
 
@@ -155,7 +178,9 @@ def compare_checkpoints(
     """
     comparisons = {}
     for ckpt in checkpoint_paths:
-        name = Path(ckpt).name
+        # Use parent/name so sft/final vs rl/final don't collide as "final"
+        path = Path(ckpt)
+        name = f"{path.parent.name}/{path.name}" if path.parent.name else path.name
         logger.info("Benchmarking checkpoint: %s", name)
         comparisons[name] = run_full_benchmark(ckpt, output_dir=output_dir, **kwargs)
 
@@ -198,18 +223,18 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
+    bench_kwargs = {
+        "output_dir": args.output_dir,
+        "stockfish_games": args.stockfish_games,
+        "random_games": args.random_games,
+        "stockfish_depth": args.stockfish_depth,
+        "temperature": args.temperature,
+    }
     if args.compare:
         all_checkpoints = [args.checkpoint] + list(args.compare)
-        compare_checkpoints(all_checkpoints, output_dir=args.output_dir, **vars(args))
+        compare_checkpoints(all_checkpoints, **bench_kwargs)
     else:
-        run_full_benchmark(
-            args.checkpoint,
-            output_dir=args.output_dir,
-            stockfish_games=args.stockfish_games,
-            random_games=args.random_games,
-            stockfish_depth=args.stockfish_depth,
-            temperature=args.temperature,
-        )
+        run_full_benchmark(args.checkpoint, **bench_kwargs)
 
 
 if __name__ == "__main__":

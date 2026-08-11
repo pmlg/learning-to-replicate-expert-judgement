@@ -7,11 +7,11 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from peft import PeftModel
-from torch.utils.data import DataLoader
+from datasets import load_from_disk
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from qwen_chess_rl.data.dataset import ChessPositionDataset, collate_fn, format_fen_prompt
+from qwen_chess_rl.data.dataset import format_fen_prompt
 from qwen_chess_rl.training.rl.config import GRPOConfig
 from qwen_chess_rl.training.rl.reward import batch_compute_rewards
 
@@ -29,6 +29,19 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+class FenPromptDataset(Dataset):
+    """Minimal dataset that yields raw FEN strings for GRPO rollouts."""
+
+    def __init__(self, data_path: str | Path, split: str = "train"):
+        self.dataset = load_from_disk(str(Path(data_path) / split))
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> str:
+        return str(self.dataset[idx]["fen"])
 
 
 def load_rl_model(cfg: GRPOConfig):
@@ -105,6 +118,8 @@ def generate_moves(
         max_length=cfg.max_length,
     ).to(model.device)
 
+    prompt_len = inputs["input_ids"].shape[1]
+
     # Generate
     with torch.no_grad():
         outputs = model.generate(
@@ -117,18 +132,14 @@ def generate_moves(
             eos_token_id=tokenizer.eos_token_id,
         )
 
-    # Decode
-    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    # Decode only newly generated tokens (not the prompt)
+    new_tokens = outputs[:, prompt_len:]
+    decoded = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
-    # Extract move from generated text (everything after "assistant\n")
+    # Extract UCI move (first whitespace-separated token)
     all_moves = [[] for _ in range(len(fens))]
     for idx, text in zip(fen_indices, decoded):
-        if "assistant" in text:
-            move = text.split("assistant")[-1].strip()
-        else:
-            move = text.strip()
-        # Take only the first word (UCI move)
-        move = move.split()[0] if move else ""
+        move = text.strip().split()[0] if text.strip() else ""
         all_moves[idx].append(move)
 
     return all_moves
@@ -167,7 +178,7 @@ def grpo_loss(
     generated_ids: list[torch.Tensor],
     advantages: list[list[float]],
     cfg: GRPOConfig,
-) -> torch.Tensor:
+) -> torch.Tensor | None:
     """Compute the GRPO loss: clipped surrogate objective + KL penalty.
 
     The loss combines:
@@ -184,10 +195,10 @@ def grpo_loss(
         cfg: GRPO configuration.
 
     Returns:
-        Scalar loss tensor.
+        Scalar loss tensor, or ``None`` when no valid generations exist.
     """
-    total_loss = 0.0
-    num_groups = 0
+    total_loss: torch.Tensor | None = None
+    num_samples = 0
 
     current_idx = 0
     for group_gen_ids, group_adv in zip(generated_ids, advantages):
@@ -224,21 +235,26 @@ def grpo_loss(
 
             # Importance ratio
             ratio = torch.exp(gen_log_probs - ref_gen_log_probs)
+            adv_t = torch.as_tensor(adv, device=ratio.device, dtype=ratio.dtype)
 
             # Clipped surrogate objective
             clipped_ratio = torch.clamp(ratio, 1 - cfg.clip_epsilon, 1 + cfg.clip_epsilon)
-            policy_loss = -torch.min(ratio * adv, clipped_ratio * adv)
+            policy_loss = -torch.min(ratio * adv_t, clipped_ratio * adv_t)
 
             # KL penalty (from ref model)
             kl_div = gen_log_probs - ref_gen_log_probs
             kl_penalty = cfg.beta * kl_div
 
-            total_loss += policy_loss + kl_penalty
-            num_groups += 1
+            sample_loss = policy_loss + kl_penalty
+            total_loss = sample_loss if total_loss is None else total_loss + sample_loss
+            num_samples += 1
 
         current_idx += 1
 
-    return total_loss / max(num_groups, 1)
+    if total_loss is None or num_samples == 0:
+        return None
+
+    return total_loss / num_samples
 
 
 def train(cfg: GRPOConfig):
@@ -268,18 +284,13 @@ def train(cfg: GRPOConfig):
     for param in ref_model.parameters():
         param.requires_grad = False
 
-    # Load dataset
-    dataset = ChessPositionDataset(
-        data_path="data/processed",
-        tokenizer=tokenizer,
-        max_length=cfg.max_length,
-        split="train",
-    )
+    # Load raw FENs (do not reuse SFT token tensors — GRPO needs prompt/FEN alignment)
+    dataset = FenPromptDataset(data_path="data/processed", split="train")
     dataloader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=lambda batch: list(batch),
         num_workers=4,
     )
 
@@ -313,19 +324,20 @@ def train(cfg: GRPOConfig):
             if global_step >= cfg.num_training_steps:
                 break
 
-            # Move to device
-            batch = {k: v.to(model.device) for k, v in batch.items()}
+            fens_batch = [fen for fen in batch if fen]
+            if not fens_batch:
+                logger.warning("Skipping empty FEN batch")
+                continue
 
-            # Decode FENs from input_ids for reward computation
-            fens_batch = []
-            for ids in batch["input_ids"]:
-                decoded = tokenizer.decode(ids, skip_special_tokens=True)
-                # Extract FEN from prompt
-                if "Position:" in decoded:
-                    fen_part = decoded.split("Position:")[-1].split("\n")[0].strip()
-                    fens_batch.append(fen_part)
-                else:
-                    fens_batch.append("")
+            # Prompt tensors must match what generate_moves uses
+            prompts = [format_fen_prompt(fen) for fen in fens_batch]
+            prompt_inputs = tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=cfg.max_length,
+            ).to(model.device)
 
             # Generate candidate moves
             all_moves = generate_moves(model, tokenizer, fens_batch, cfg)
@@ -351,15 +363,19 @@ def train(cfg: GRPOConfig):
                 gen_ids = []
                 for move_uci in moves:
                     if move_uci:
-                        ids = tokenizer.encode(move_uci, return_tensors="pt")
+                        ids = tokenizer.encode(
+                            move_uci,
+                            add_special_tokens=False,
+                            return_tensors="pt",
+                        )
                         gen_ids.append(ids.squeeze(0).to(model.device))
                     else:
-                        gen_ids.append(torch.tensor([], device=model.device))
+                        gen_ids.append(torch.tensor([], dtype=torch.long, device=model.device))
                 generated_ids.append(gen_ids)
 
             loss = grpo_loss(
                 model, ref_model,
-                batch["input_ids"], batch["attention_mask"],
+                prompt_inputs["input_ids"], prompt_inputs["attention_mask"],
                 generated_ids, advantages, cfg,
             )
 
@@ -373,7 +389,7 @@ def train(cfg: GRPOConfig):
                 )
                 luffy_loss_tensor = luffy_result.get("loss_tensor")
                 if luffy_loss_tensor is not None:
-                    loss = loss + luffy_loss_tensor
+                    loss = luffy_loss_tensor if loss is None else loss + luffy_loss_tensor
                 luffy_metrics = {
                     "luffy_is_ratio": luffy_result.get("mean_is_ratio", 0.0),
                     "luffy_confidence": luffy_result.get("mean_confidence_weight", 0.0),
@@ -381,13 +397,21 @@ def train(cfg: GRPOConfig):
                     "luffy_raw_loss": luffy_result.get("raw_is_loss", 0.0),
                 }
 
+            global_step += 1
+
+            if loss is None or not torch.is_tensor(loss):
+                logger.warning(
+                    "Step %s: no differentiable GRPO loss (empty generations); skipping update",
+                    global_step,
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
             # Backward pass
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
             optimizer.step()
             optimizer.zero_grad()
-
-            global_step += 1
 
             # Logging
             if global_step % cfg.logging_steps == 0:

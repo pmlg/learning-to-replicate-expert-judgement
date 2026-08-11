@@ -10,7 +10,7 @@ from qwen_chess_rl.data.download import (
     _quality_filter,
     split_train_val_test,
 )
-from qwen_chess_rl.data.dataset import format_fen_prompt
+from qwen_chess_rl.data.dataset import extract_best_move, format_fen_prompt
 from qwen_chess_rl.data.preprocess import (
     compute_position_difficulty,
     validate_dataset,
@@ -69,6 +69,19 @@ class TestPromptFormat:
         assert "Position:" in prompt
         assert fen in prompt
         assert "Best move:" in prompt
+
+
+class TestExtractBestMove:
+    """Test move extraction from Lichess-style examples."""
+
+    def test_from_line_pv(self):
+        assert extract_best_move({"line": "b2e5 c7e5 e1d3"}) == "b2e5"
+
+    def test_prefers_explicit_move(self):
+        assert extract_best_move({"move": "e2e4", "line": "b2e5 c7e5"}) == "e2e4"
+
+    def test_empty(self):
+        assert extract_best_move({}) == ""
 
 
 class TestPositionDifficulty:

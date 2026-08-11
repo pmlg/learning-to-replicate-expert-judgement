@@ -7,11 +7,11 @@
 The model learns to predict the best move from FEN positions using cross-entropy loss.
 
 **Setup:**
-- Model: Qwen/Qwen-8B
+- Model: Qwen/Qwen3-1.7B (override with `--model` / `model_name`)
 - Method: QLoRA (4-bit, lora_r=16)
 - Batch size: 4 per GPU (effective: 32 with grad accumulation)
 - Learning rate: 2e-4 (cosine schedule)
-- Hardware: 1× RTX 5090 (~24GB VRAM)
+- Hardware: GPU with ~8GB+ VRAM for 1.7B QLoRA
 
 **Monitoring:**
 ```bash

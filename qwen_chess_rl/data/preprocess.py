@@ -33,7 +33,7 @@ def fen_to_features(fen: str) -> dict:
     try:
         board = chess.Board(fen)
         return {
-            "piece_count": board.uci(),
+            "piece_count": len(board.piece_map()),
             "has_kings": bool(board.king(chess.WHITE) and board.king(chess.BLACK)),
             "turn": board.turn,
             "castling_rights": board.castling_xfen(),
@@ -81,8 +81,10 @@ def validate_dataset(
     piece_counts = []
 
     for example in ds:
+        from qwen_chess_rl.data.dataset import extract_best_move
+
         fen = str(example.get("fen", ""))
-        move = str(example.get("move", example.get("bestmove", "")))
+        move = extract_best_move(example)
 
         if not fen:
             missing_fen += 1
@@ -91,7 +93,7 @@ def validate_dataset(
             try:
                 board = chess.Board(fen)
                 valid_fen += 1
-                piece_counts.append(board.uci())
+                piece_counts.append(len(board.piece_map()))
             except ValueError:
                 pass
 
@@ -167,7 +169,7 @@ def compute_position_difficulty(fen: str) -> float:
         return 0.5
 
     num_legal = len(list(board.legal_moves))
-    piece_count = board.uci()
+    piece_count = len(board.piece_map())
 
     # More legal moves → more tactical complexity → harder
     move_complexity = min(num_legal / 50.0, 1.0)

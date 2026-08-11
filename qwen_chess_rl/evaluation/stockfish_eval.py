@@ -38,11 +38,13 @@ class StockfishPlayer:
         self.engine = None
 
     def start(self):
-        if self.stockfish_path:
-            try:
-                _, self.engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
-            except Exception as exc:
-                logger.error("Failed to start Stockfish: %s", exc)
+        if not self.stockfish_path:
+            raise RuntimeError("Stockfish binary not found; install stockfish or set STOCKFISH_PATH")
+        try:
+            # python-chess >= 1.0 returns SimpleEngine directly (not a transport tuple)
+            self.engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to start Stockfish at {self.stockfish_path}: {exc}") from exc
 
     def stop(self):
         if self.engine:
@@ -76,31 +78,21 @@ class HuggingFaceModelPlayer:
         Returns:
             Chosen move in UCI format, or None if generation fails.
         """
-        from qwen_chess_rl.data.dataset import format_fen_prompt
+        from qwen_chess_rl.inference import choose_uci_move
 
-        prompt = format_fen_prompt(board.fen())
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=8,
-                temperature=self.temperature,
-                do_sample=self.temperature > 0,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-
-        decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        if "assistant" in decoded:
-            move_str = decoded.split("assistant")[-1].strip().split()[0]
-        else:
-            move_str = decoded.strip().split()[-1]
-
-        try:
-            return chess.Move.from_uci(move_str)
-        except (ValueError, IndexError):
+        uci = choose_uci_move(
+            self.model,
+            self.tokenizer,
+            board,
+            temperature=self.temperature,
+        )
+        if not uci:
             return None
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return None
+        return move if move in board.legal_moves else None
 
 
 def play_game(

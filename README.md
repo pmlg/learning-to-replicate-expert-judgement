@@ -1,8 +1,8 @@
 # ♟ Qwen Chess RL
 
-**Train Qwen-8B to play chess via Supervised Fine-Tuning (SFT) and Reinforcement Learning (GRPO)**
+**Train Qwen (default: Qwen3-1.7B) to play chess via Supervised Fine-Tuning (SFT) and Reinforcement Learning (GRPO)**
 
-This project implements an end-to-end training pipeline for fine-tuning **Qwen-8B** to play chess, using ~2 million labelled chess positions from Lichess. It includes:
+This project implements an end-to-end training pipeline for fine-tuning a **Qwen** model (default **`Qwen/Qwen3-1.7B`**) to play chess, using ~2 million labelled chess positions from Lichess. It includes:
 
 - 📥 **Data Pipeline** — Download, filter, and sample 2M chess positions from the [Lichess chess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) dataset
 - 🎯 **SFT Training** — Supervised fine-tuning with QLoRA to predict best moves from FEN positions
@@ -37,7 +37,7 @@ This project implements an end-to-end training pipeline for fine-tuning **Qwen-8
 flowchart TD
     A[Lichess Dataset] --> B[Data Pipeline]
     B --> C[2M Filtered Positions]
-    C --> D[SFT Training<br/>QLoRA Qwen-8B]
+    C --> D[SFT Training<br/>QLoRA Qwen3-1.7B]
     D --> E[SFT Checkpoint]
     E --> F[GRPO RL Training<br/>Stockfish Reward]
     F --> G[RL Checkpoint]
@@ -61,7 +61,7 @@ flowchart TD
     end
 
     subgraph SFT["SFT — Supervised Fine-Tuning"]
-        S1["Qwen-8B + QLoRA (lora_r=16, 4-bit)"]
+        S1["Qwen3-1.7B + QLoRA (lora_r=16, 4-bit)"]
         S2["Input: FEN → Output: Best Move (UCI)"]
         S3["Loss: CrossEntropy (next_token)"]
         S1 --- S2 --- S3
@@ -101,7 +101,7 @@ The GRPO reward function considers multiple chess-quality factors:
 
 - Python 3.10–3.12
 - [uv](https://docs.astral.sh/uv/) for dependency management
-- CUDA-compatible GPU (recommended: RTX 5090 for 8B model)
+- CUDA-compatible GPU (recommended: 8GB+ VRAM for Qwen3-1.7B QLoRA)
 - Stockfish chess engine (`sudo apt-get install stockfish`)
 - For optional FlashAttention: NVIDIA CUDA Toolkit with `nvcc` (not just the driver)
 
@@ -206,6 +206,11 @@ Fine-tune Qwen using QLoRA to predict the best move from FEN positions.
 The full ~2M train set is **not required** for a useful LoRA run. By default the
 script uses a shuffled subset of **50k train / 2k val** examples. Pass
 `--max-train-samples -1` for the full dataset.
+
+> **Training target:** Lichess rows store the Stockfish PV in `line` (e.g.
+> `e2e4 e7e5 ...`). SFT uses the **first UCI move** from that field as the label.
+> If you trained before this fix, checkpoints only learned to emit end-of-turn —
+> retrain SFT after pulling the latest code.
 
 ```bash
 # Default training (50k train / 2k val)
@@ -353,21 +358,43 @@ print(results["vs_stockfish"]["estimated_elo"])
 
 ## 🌐 Web Application
 
-### Start Backend
+Play against your trained model in the browser. This project’s training scripts
+default to **`Qwen/Qwen3-1.7B`** (not Qwen-8B). Your LoRA adapters under
+`checkpoints/sft/final` or `checkpoints/rl/final` are fine-tunes of that base model.
+
+### How to play (local)
+
+**Terminal 1 — backend** (loads the checkpoint; first start downloads the base model if needed):
 
 ```bash
-# Start the FastAPI server
-QWEN_CHESS_CHECKPOINT=checkpoints/sft/final \
-    uvicorn qwen_chess_rl.web.backend.main:app --host 0.0.0.0 --port 8000
+cd ~/workspace/qwen-chess-rl
+source .venv/bin/activate
+
+# SFT model, or use checkpoints/rl/final after GRPO
+export QWEN_CHESS_CHECKPOINT=checkpoints/sft/final
+uv run uvicorn qwen_chess_rl.web.backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Start Frontend (Development)
+You can also set `QWEN_CHESS_CHECKPOINT` in `.env` instead of exporting it.
+
+Check that the real model id is reported:
 
 ```bash
-cd web/frontend
+curl -s http://localhost:8000/health
+# expect: "model_loaded": true, "model_name": "Qwen/Qwen3-1.7B"
+```
+
+**Terminal 2 — frontend**:
+
+```bash
+cd ~/workspace/qwen-chess-rl/web/frontend
 npm install
 npm run dev
 ```
+
+Open **http://localhost:3000**, click **New Game**, and drag pieces as White.
+The model replies after each of your moves. The page subtitle shows the loaded
+base model name (e.g. `Qwen/Qwen3-1.7B`).
 
 ### API Endpoints
 
@@ -515,7 +542,7 @@ cp .env.example .env
 
 Create a `config.yaml`:
 ```yaml
-model_name: Qwen/Qwen-8B
+model_name: Qwen/Qwen3-1.7B
 lora_r: 32
 lora_alpha: 64
 batch_size: 8
@@ -531,27 +558,44 @@ bash scripts/train_sft.sh --config config.yaml
 
 ## 📈 Results
 
-> *Results will be populated after training runs complete.*
+Benchmark from `evaluation_results/comparison.json` (smoke run: **4 games vs Stockfish
+depth 8**, **2 games vs random**, temperature `0.1`, base model `Qwen/Qwen3-1.7B`).
 
-### SFT Results (Baseline)
+> These checkpoints were trained before the SFT label fix (`line` → best UCI move).
+> Treat the numbers as a baseline comparison protocol, not final strength. Re-run
+> after retraining:
+> `bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final`
 
-| Metric | Value |
-|--------|-------|
-| Training Loss | — |
-| Eval Loss | — |
-| Legal Move % | — |
-| Avg Centipawn Loss | — |
+### Head-to-head: SFT vs GRPO
 
-### GRPO Improvement Over SFT
+| Metric | SFT (`checkpoints/sft/final`) | GRPO (`checkpoints/rl/final`) |
+|--------|-------------------------------|-------------------------------|
+| vs Stockfish (d8) W–D–L | 0–0–4 | 0–0–4 |
+| Win rate vs Stockfish | 0% | 0% |
+| Loss rate vs Stockfish | 100% | 100% |
+| Avg game length (plies) | 20.5 | 22.5 |
+| Estimated Elo (from match) | 1600 | 1600 |
+| vs Random W–D–L | 0–1–1 | 0–2–0 |
+| Win rate vs random | 0% | 0% |
 
-| Metric | SFT | GRPO | Improvement |
-|--------|-----|------|-------------|
-| Win Rate vs Stockfish (d8) | — | — | — |
-| Estimated Elo | — | — | — |
-| Puzzle Accuracy | — | — | — |
+GRPO did not improve Stockfish match score in this short run, but games lasted slightly
+longer (22.5 vs 20.5 plies) and it drew both random-player games (SFT: 1 draw, 1 loss).
+
+### Test-set label checks
+
+These metrics score **dataset labels** (first Stockfish PV move on 1000 test FENs),
+not model generations:
+
+| Metric | SFT run | GRPO run |
+|--------|---------|----------|
+| Legal move % (labels) | 100% | 100% |
+| Avg centipawn loss (labels) | 0.0 | 0.0 |
+| Samples | 1000 | 1000 |
+
+Raw artifacts: [`evaluation_results/comparison.json`](evaluation_results/comparison.json),
+[`evaluation_results/benchmark_results.json`](evaluation_results/benchmark_results.json).
 
 ---
-
 ## 📚 Documentation
 
 Detailed documentation is available in the `docs/` directory:
@@ -581,7 +625,7 @@ Papers describing the core techniques this project implements:
 
 ```bibtex
 @software{qwen_chess_rl,
-  title = {Qwen Chess RL: Fine-tuning Qwen-8B for Chess via SFT and GRPO},
+  title = {Qwen Chess RL: Fine-tuning Qwen3-1.7B for Chess via SFT and GRPO},
   author = {El Fayoumi, Ibrahim},
   year = {2026},
   url = {https://github.com/deep-science-ai/qwen-chess-rl}
@@ -596,4 +640,4 @@ Proprietary — Copyright ©2026 DSAI. All Rights Reserved.
 
 ---
 
-*Built with [Qwen-8B](https://huggingface.co/Qwen/Qwen-8B), [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [python-chess](https://python-chess.readthedocs.io/).*
+*Built with [Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B), [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [python-chess](https://python-chess.readthedocs.io/).*

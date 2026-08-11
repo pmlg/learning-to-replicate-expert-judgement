@@ -1,4 +1,4 @@
-"""SFT training configuration for QLoRA fine-tuning of Qwen-8B."""
+"""SFT training configuration for QLoRA fine-tuning of Qwen chess models."""
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -6,7 +6,7 @@ from typing import Optional
 
 @dataclass
 class SFTConfig:
-    """Configuration for supervised fine-tuning of Qwen-8B on chess positions.
+    """Configuration for supervised fine-tuning of a Qwen model on chess positions.
 
     Attributes:
         model_name: HuggingFace model identifier.
@@ -44,7 +44,7 @@ class SFTConfig:
     """
 
     # Model
-    model_name: str = "Qwen/Qwen-8B"
+    model_name: str = "Qwen/Qwen3-1.7B"
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05

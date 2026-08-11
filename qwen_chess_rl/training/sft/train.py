@@ -1,4 +1,4 @@
-"""Supervised Fine-Tuning (SFT) for Qwen-8B on chess positions using QLoRA."""
+"""Supervised Fine-Tuning (SFT) for Qwen on chess positions using QLoRA."""
 
 import logging
 import sys
@@ -67,7 +67,7 @@ def create_lora_config(cfg: SFTConfig) -> LoraConfig:
 
 
 def load_model_and_tokenizer(cfg: SFTConfig):
-    """Load Qwen-8B with 4-bit quantization and prepare for LoRA training.
+    """Load the configured Qwen model with 4-bit quantization and LoRA.
 
     Args:
         cfg: Training configuration.
@@ -287,7 +287,7 @@ def main():
     """CLI entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="SFT train Qwen-8B on chess positions")
+    parser = argparse.ArgumentParser(description="SFT train Qwen on chess positions")
     parser.add_argument("--config", type=str, help="Path to YAML config file")
     parser.add_argument("--model-name", type=str, default=SFTConfig.model_name)
     parser.add_argument("--data-path", type=str, default=SFTConfig.data_path)

@@ -171,7 +171,7 @@ class TraceGenerator:
         engine = None
         try:
             if self.stockfish_path:
-                _, engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
+                engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
         except Exception:
             return 0.0
 
@@ -188,13 +188,17 @@ class TraceGenerator:
                 if score_obj is None:
                     scores.append(0.0)
                     continue
-                if score_obj.is_mate():
-                    # Mate scores: large positive for good moves
-                    mate_val = score_obj.mate()
-                    scores.append(10000.0 if (mate_val and mate_val > 0) else -10000.0)
+                # PovScore has no .score()/.mate() — use .relative (relative
+                # to the side to move, i.e. the opponent after our push).
+                relative_score = score_obj.relative
+                if relative_score.is_mate():
+                    mate_val = relative_score.mate()
+                    # mate_val is from the opponent's point of view: positive
+                    # means the opponent mates (bad for us), so flip the sign.
+                    scores.append(-10000.0 if (mate_val and mate_val > 0) else 10000.0)
                 else:
                     # Negate because after our move it's opponent's perspective
-                    scores.append(float(score_obj.score()))
+                    scores.append(-float(relative_score.score()))
         except Exception as exc:
             logger.debug("Behaviour log-prob computation failed: %s", exc)
             return 0.0

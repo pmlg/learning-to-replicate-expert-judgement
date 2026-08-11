@@ -3,7 +3,7 @@ import React from 'react';
 /**
  * Game information panel: FEN display, move history, result.
  */
-function GameInfo({ fen, moveHistory, gameResult, isGameOver, modelLoaded }) {
+function GameInfo({ fen, moveHistory, gameResult, isGameOver, modelLoaded, modelName }) {
   return (
     <div className="game-info">
       <h3>Game Info</h3>
@@ -16,7 +16,9 @@ function GameInfo({ fen, moveHistory, gameResult, isGameOver, modelLoaded }) {
       <div className="info-section">
         <label>Status:</label>
         <span className={`status ${modelLoaded ? 'online' : 'offline'}`}>
-          {modelLoaded ? 'Model Ready' : 'Model Loading...'}
+          {modelLoaded
+            ? `Model Ready${modelName ? ` (${modelName})` : ''}`
+            : 'Model not loaded — restart backend with checkpoint'}
         </span>
       </div>
 

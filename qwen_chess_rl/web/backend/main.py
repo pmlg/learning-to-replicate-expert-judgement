@@ -9,6 +9,7 @@ import chess
 import chess.svg
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ app.add_middleware(
 model = None
 tokenizer = None
 MODEL_LOADED = False
+MODEL_NAME = None
+CHECKPOINT_PATH = None
 
 
 class GameState:
@@ -88,41 +91,12 @@ class GameState:
         """
         global model, tokenizer
 
-        from qwen_chess_rl.data.dataset import format_fen_prompt
-
         if not MODEL_LOADED:
             return None
 
-        prompt = format_fen_prompt(self.board.fen())
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        from qwen_chess_rl.inference import choose_uci_move
 
-        import torch
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=8,
-                temperature=0.1,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-
-        decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        if "assistant" in decoded:
-            move_str = decoded.split("assistant")[-1].strip().split()[0]
-        else:
-            move_str = decoded.strip().split()[-1]
-
-        try:
-            move = chess.Move.from_uci(move_str)
-            if move in self.board.legal_moves:
-                return move.uci()
-        except ValueError:
-            pass
-
-        # Fallback: return first legal move
-        legal = list(self.board.legal_moves)
-        return legal[0].uci() if legal else None
+        return choose_uci_move(model, tokenizer, self.board, temperature=0.0)
 
     def _update_pgn(self):
         """Update the PGN string from move history."""
@@ -191,42 +165,130 @@ class MoveResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def resolve_checkpoint_path() -> Path | None:
+    """Pick a usable checkpoint path from env or local defaults."""
+    import os
+
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
+
+    candidates = []
+    env_path = (os.environ.get("QWEN_CHESS_CHECKPOINT") or "").strip()
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.extend(
+        [
+            Path("checkpoints/sft/final"),
+            Path("checkpoints/rl/final"),
+        ]
+    )
+
+    for path in candidates:
+        if path.exists() and (
+            (path / "adapter_config.json").exists()
+            or (path / "config.json").exists()
+        ):
+            return path.resolve()
+    return None
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize model on server start (if checkpoint path is configured)."""
-    import os
-    ckpt_path = os.environ.get("QWEN_CHESS_CHECKPOINT", "")
-    if ckpt_path and Path(ckpt_path).exists():
-        load_model(ckpt_path)
+    """Initialize model on server start."""
+    ckpt_path = resolve_checkpoint_path()
+    if ckpt_path is None:
+        logger.warning(
+            "No chess checkpoint found. Set QWEN_CHESS_CHECKPOINT to "
+            "checkpoints/sft/final (or checkpoints/rl/final), then restart."
+        )
+        return
+    try:
+        load_model(str(ckpt_path))
+    except Exception:
+        logger.exception("Failed to load checkpoint %s", ckpt_path)
 
 
 def load_model(checkpoint_path: str):
     """Load the chess model into memory.
 
+    Supports full checkpoints and PEFT/LoRA adapter directories (reads
+    ``adapter_config.json`` for the base model id, e.g. ``Qwen/Qwen3-1.7B``).
+
     Args:
         checkpoint_path: Path to the model checkpoint.
     """
-    global model, tokenizer, MODEL_LOADED
+    global model, tokenizer, MODEL_LOADED, MODEL_NAME, CHECKPOINT_PATH
+    import json
+
+    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    ckpt = Path(checkpoint_path)
+    adapter_cfg_path = ckpt / "adapter_config.json"
     logger.info("Loading model from %s ...", checkpoint_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        checkpoint_path,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype="auto",
-    )
-    model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        checkpoint_path,
-        trust_remote_code=True,
-    )
+    if adapter_cfg_path.exists():
+        with open(adapter_cfg_path) as f:
+            adapter_cfg = json.load(f)
+        base_name = adapter_cfg.get("base_model_name_or_path") or "Qwen/Qwen3-1.7B"
+        MODEL_NAME = base_name
+        logger.info("PEFT adapter detected; base model: %s", base_name)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_name,
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(base_model, str(ckpt))
+        tokenizer = AutoTokenizer.from_pretrained(str(ckpt), trust_remote_code=True)
+    else:
+        MODEL_NAME = checkpoint_path
+        model = AutoModelForCausalLM.from_pretrained(
+            checkpoint_path,
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            checkpoint_path,
+            trust_remote_code=True,
+        )
+
+    model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    CHECKPOINT_PATH = str(ckpt)
     MODEL_LOADED = True
-    logger.info("Model loaded successfully.")
+    logger.info("Model loaded successfully (%s).", MODEL_NAME)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Friendly landing page — the chess UI is the Vite app on port 3000."""
+    status = "loaded" if MODEL_LOADED else "not loaded"
+    model = MODEL_NAME or "none"
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Qwen Chess API</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }}
+code {{ background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 4px; }}
+a.button {{ display: inline-block; margin-top: 1rem; padding: 0.6rem 1rem; background: #1f6feb; color: #fff; text-decoration: none; border-radius: 6px; }}
+</style></head>
+<body>
+  <h1>Qwen Chess API</h1>
+  <p>This is the <strong>backend</strong> on port <code>8000</code>. The playable UI is the frontend.</p>
+  <p>Model: <code>{model}</code> ({status})</p>
+  <ol>
+    <li>In another terminal: <code>cd web/frontend && npm run dev</code></li>
+    <li>Open <a href="http://localhost:3000">http://localhost:3000</a></li>
+  </ol>
+  <a class="button" href="http://localhost:3000">Open chess UI</a>
+  <p style="margin-top:2rem"><a href="/health">/health</a> · <a href="/docs">/docs</a></p>
+</body></html>"""
 
 
 @app.get("/health")
@@ -235,6 +297,8 @@ async def health():
     return {
         "status": "ok",
         "model_loaded": MODEL_LOADED,
+        "model_name": MODEL_NAME,
+        "checkpoint": CHECKPOINT_PATH,
     }
 
 
@@ -257,12 +321,31 @@ async def new_game(req: NewGameRequest):
 
     games[session_id] = game
 
+    ai_move = None
+    # If the human plays black, the model (white) moves first.
+    if req.color.lower() == "black" and not game.game_over:
+        if not MODEL_LOADED:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Model is not loaded. Set QWEN_CHESS_CHECKPOINT to "
+                    "checkpoints/sft/final and restart the backend."
+                ),
+            )
+        ai_move = game.get_ai_move()
+        if ai_move:
+            game.make_move(ai_move)
+
     return {
         "session_id": session_id,
         "fen": game.board.fen(),
         "is_game_over": game.game_over,
         "turn": "white" if game.board.turn == chess.WHITE else "black",
         "legal_moves": [m.uci() for m in game.board.legal_moves],
+        "model_loaded": MODEL_LOADED,
+        "model_name": MODEL_NAME,
+        "ai_move": ai_move,
+        "move_history": game.move_history,
     }
 
 
@@ -295,6 +378,15 @@ async def make_move(req: MoveRequest):
             result=game.result,
             legal_moves=[],
             ai_move=None,
+        )
+
+    if not MODEL_LOADED:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Model is not loaded. Set QWEN_CHESS_CHECKPOINT to "
+                "checkpoints/sft/final and restart the backend."
+            ),
         )
 
     # Get AI move
