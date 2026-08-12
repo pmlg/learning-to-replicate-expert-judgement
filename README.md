@@ -558,39 +558,42 @@ bash scripts/train_sft.sh --config config.yaml
 
 ## 📈 Results
 
-Benchmark from `evaluation_results/comparison.json` (smoke run: **4 games vs Stockfish
-depth 8**, **2 games vs random**, temperature `0.1`, base model `Qwen/Qwen3-1.7B`).
+Benchmark from [`evaluation_results/comparison.json`](evaluation_results/comparison.json)
+(default protocol: **20 games vs Stockfish depth 8**, **10 games vs random**,
+temperature `0.1`, base model `Qwen/Qwen3-1.7B`).
 
-> These checkpoints were trained before the SFT label fix (`line` → best UCI move).
-> Treat the numbers as a baseline comparison protocol, not final strength. Re-run
-> after retraining:
-> `bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final`
+```bash
+bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final
+```
 
 ### Head-to-head: SFT vs GRPO
 
 | Metric | SFT (`checkpoints/sft/final`) | GRPO (`checkpoints/rl/final`) |
 |--------|-------------------------------|-------------------------------|
-| vs Stockfish (d8) W–D–L | 0–0–4 | 0–0–4 |
+| vs Stockfish (d8) W–D–L | 0–0–20 | 0–0–20 |
 | Win rate vs Stockfish | 0% | 0% |
 | Loss rate vs Stockfish | 100% | 100% |
-| Avg game length (plies) | 20.5 | 22.5 |
+| Avg game length (plies) | 44.7 | 47.5 |
 | Estimated Elo (from match) | 1600 | 1600 |
-| vs Random W–D–L | 0–1–1 | 0–2–0 |
+| vs Random W–D–L | 0–9–1 | 0–6–4 |
+| Draw rate vs random | 90% | 60% |
 | Win rate vs random | 0% | 0% |
 
-GRPO did not improve Stockfish match score in this short run, but games lasted slightly
-longer (22.5 vs 20.5 plies) and it drew both random-player games (SFT: 1 draw, 1 loss).
+Neither checkpoint scored a win against Stockfish at depth 8. GRPO games lasted slightly
+longer on average (47.5 vs 44.7 plies). Against a random-move opponent, SFT drew more
+often (9/10 vs 6/10); neither model won a game.
 
 ### Test-set label checks
 
 These metrics score **dataset labels** (first Stockfish PV move on 1000 test FENs),
-not model generations:
+not model generations — so SFT and GRPO share the same numbers:
 
-| Metric | SFT run | GRPO run |
-|--------|---------|----------|
-| Legal move % (labels) | 100% | 100% |
-| Avg centipawn loss (labels) | 0.0 | 0.0 |
-| Samples | 1000 | 1000 |
+| Metric | Value |
+|--------|-------|
+| Legal move % (labels) | 100% |
+| Avg centipawn loss (labels) | 259.5 |
+| Median centipawn loss (labels) | 0.0 |
+| Samples | 1000 |
 
 Raw artifacts: [`evaluation_results/comparison.json`](evaluation_results/comparison.json),
 [`evaluation_results/benchmark_results.json`](evaluation_results/benchmark_results.json).

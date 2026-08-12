@@ -10,6 +10,9 @@ class GRPOConfig:
     Attributes:
         sft_checkpoint: Path to the SFT-fine-tuned model checkpoint.
         output_dir: Directory for saving RL checkpoints.
+        use_4bit: Whether to load the policy/reference models in 4-bit (QLoRA).
+        bnb_4bit_quant_type: Quantization type ('nf4' or 'fp4').
+        bnb_4bit_use_double_quant: Use double quantization for memory savings.
         num_generations: Number of responses to generate per prompt for advantage estimation.
         clip_epsilon: Clipping parameter for the surrogate loss (ε in GRPO paper).
         beta: KL penalty coefficient.
@@ -43,6 +46,13 @@ class GRPOConfig:
     # Model
     sft_checkpoint: str = "checkpoints/sft/final"
     output_dir: str = "checkpoints/rl"
+
+    # Quantization — the policy and reference model are each a full copy of
+    # the base model; without 4-bit quantization, two bf16 9B-param copies
+    # (~18GB each) don't fit on a single 24-32GB GPU.
+    use_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_use_double_quant: bool = True
 
     # GRPO hyperparameters
     num_generations: int = 8

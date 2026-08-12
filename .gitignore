@@ -67,3 +67,4 @@ secrets.yaml
 .omc/
 graphify-out/
 
+evaluation_results/

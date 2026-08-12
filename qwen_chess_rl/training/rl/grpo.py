@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from datasets import load_from_disk
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from qwen_chess_rl.data.dataset import format_fen_prompt
 from qwen_chess_rl.training.rl.config import GRPOConfig
@@ -44,11 +44,17 @@ class FenPromptDataset(Dataset):
         return str(self.dataset[idx]["fen"])
 
 
-def load_rl_model(cfg: GRPOConfig):
+def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
     """Load the SFT-fine-tuned model for RL training.
+
+    Loaded in 4-bit (matching the SFT stage) — the policy and reference
+    model are each a full copy of the base model, and two full-precision
+    9B-param copies don't fit in a single 24-32GB GPU alongside activations.
 
     Args:
         cfg: GRPO configuration.
+        trainable: Whether this copy will be trained (the policy model) or
+            only used for frozen inference (the reference model).
 
     Returns:
         (model, tokenizer) tuple.
@@ -63,20 +69,48 @@ def load_rl_model(cfg: GRPOConfig):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.sft_checkpoint,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=cfg.use_4bit,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type=cfg.bnb_4bit_quant_type,
+        bnb_4bit_use_double_quant=cfg.bnb_4bit_use_double_quant,
     )
 
-    # Ensure we're using the LoRA-adapter model
-    if hasattr(model, "peft_config"):
-        logger.info("Loaded PEFT model with LoRA adapters.")
+    adapter_config_path = Path(cfg.sft_checkpoint) / "adapter_config.json"
+    if adapter_config_path.exists():
+        from peft import PeftConfig, PeftModel, prepare_model_for_kbit_training
+
+        peft_config = PeftConfig.from_pretrained(cfg.sft_checkpoint)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            peft_config.base_model_name_or_path,
+            device_map="auto",
+            trust_remote_code=True,
+            quantization_config=quantization_config,
+        )
+        if trainable:
+            base_model = prepare_model_for_kbit_training(base_model)
+        # is_trainable=True is required — loading an adapter for inference
+        # (the default) freezes it, and loss.backward() would fail with
+        # "element 0 of tensors does not require grad and does not have a grad_fn".
+        model = PeftModel.from_pretrained(
+            base_model,
+            cfg.sft_checkpoint,
+            is_trainable=trainable,
+        )
+        logger.info(
+            "Loaded PEFT model with %s LoRA adapters.",
+            "trainable" if trainable else "frozen",
+        )
     else:
+        model = AutoModelForCausalLM.from_pretrained(
+            cfg.sft_checkpoint,
+            device_map="auto",
+            trust_remote_code=True,
+            quantization_config=quantization_config,
+        )
         logger.warning("Model does not appear to have LoRA adapters loaded.")
 
-    model.train()
+    model.train() if trainable else model.eval()
     return model, tokenizer
 
 
@@ -278,8 +312,8 @@ def train(cfg: GRPOConfig):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load model and reference model
-    model, tokenizer = load_rl_model(cfg)
-    ref_model, _ = load_rl_model(cfg)
+    model, tokenizer = load_rl_model(cfg, trainable=True)
+    ref_model, _ = load_rl_model(cfg, trainable=False)
     ref_model.eval()
     for param in ref_model.parameters():
         param.requires_grad = False
@@ -341,6 +375,14 @@ def train(cfg: GRPOConfig):
 
             # Generate candidate moves
             all_moves = generate_moves(model, tokenizer, fens_batch, cfg)
+
+            if (global_step + 1) % cfg.logging_steps == 0:
+                sample_fen = fens_batch[0]
+                sample_moves = all_moves[0]
+                logger.info(
+                    "Step %s sample generations for %s: %s",
+                    global_step + 1, sample_fen, sample_moves,
+                )
 
             # Compute rewards using Stockfish
             all_rewards = []
