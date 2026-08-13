@@ -213,7 +213,7 @@ def load_model(checkpoint_path: str):
     """Load the chess model into memory.
 
     Supports full checkpoints and PEFT/LoRA adapter directories (reads
-    ``adapter_config.json`` for the base model id, e.g. ``Qwen/Qwen3-1.7B``).
+    ``adapter_config.json`` for the base model id, e.g. ``Qwen/Qwen3-4B``).
 
     Args:
         checkpoint_path: Path to the model checkpoint.
@@ -231,7 +231,7 @@ def load_model(checkpoint_path: str):
     if adapter_cfg_path.exists():
         with open(adapter_cfg_path) as f:
             adapter_cfg = json.load(f)
-        base_name = adapter_cfg.get("base_model_name_or_path") or "Qwen/Qwen3-1.7B"
+        base_name = adapter_cfg.get("base_model_name_or_path") or "Qwen/Qwen3-4B"
         MODEL_NAME = base_name
         logger.info("PEFT adapter detected; base model: %s", base_name)
         base_model = AutoModelForCausalLM.from_pretrained(

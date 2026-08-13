@@ -35,6 +35,8 @@ def format_fen_prompt(fen: str) -> str:
     """Format a FEN position as a prompt for the model.
 
     The model receives the FEN and outputs the best move in UCI notation.
+    The empty ``<think>`` block matches Qwen3 ``enable_thinking=False`` so
+    generation starts with the UCI move instead of a reasoning trace.
 
     Args:
         fen: FEN string of the position.
@@ -42,7 +44,16 @@ def format_fen_prompt(fen: str) -> str:
     Returns:
         Formatted prompt string.
     """
-    return f"<|im_start|>system\nYou are a chess engine. Given a FEN position, output the best move in UCI format (e.g., e2e4).\n<|im_end|>\n<|im_start|>user\nPosition: {fen}\nBest move:<|im_end|>\n<|im_start|>assistant\n"
+    return (
+        "<|im_start|>system\n"
+        "You are a chess engine. Given a FEN position, output the best move "
+        "in UCI format (e.g., e2e4).\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        f"Position: {fen}\nBest move:<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n\n</think>\n\n"
+    )
 
 
 def format_move_target(move: str) -> str:

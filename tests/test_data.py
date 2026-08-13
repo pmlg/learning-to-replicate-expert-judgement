@@ -69,6 +69,7 @@ class TestPromptFormat:
         assert "Position:" in prompt
         assert fen in prompt
         assert "Best move:" in prompt
+        assert "<think>\n\n</think>" in prompt
 
 
 class TestExtractBestMove:

@@ -36,7 +36,7 @@ def load_model_for_eval(checkpoint_path: str):
 
     if adapter_cfg_path.exists():
         with open(adapter_cfg_path) as f:
-            base_name = json.load(f).get("base_model_name_or_path") or "Qwen/Qwen3-1.7B"
+            base_name = json.load(f).get("base_model_name_or_path") or "Qwen/Qwen3-4B"
         logger.info("PEFT adapter detected; base model: %s", base_name)
         base_model = AutoModelForCausalLM.from_pretrained(
             base_name,

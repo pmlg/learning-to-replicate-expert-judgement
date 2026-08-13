@@ -1,8 +1,8 @@
 # ♟ Qwen Chess RL
 
-**Train Qwen (default: Qwen3-1.7B) to play chess via Supervised Fine-Tuning (SFT) and Reinforcement Learning (GRPO)**
+**Train Qwen (default: Qwen3-4B) to play chess via Supervised Fine-Tuning (SFT) and Reinforcement Learning (GRPO)**
 
-This project implements an end-to-end training pipeline for fine-tuning a **Qwen** model (default **`Qwen/Qwen3-1.7B`**) to play chess, using ~2 million labelled chess positions from Lichess. It includes:
+This project implements an end-to-end training pipeline for fine-tuning a **Qwen** model (default **`Qwen/Qwen3-4B`**) to play chess, using ~2 million labelled chess positions from Lichess. It includes:
 
 - 📥 **Data Pipeline** — Download, filter, and sample 2M chess positions from the [Lichess chess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) dataset
 - 🎯 **SFT Training** — Supervised fine-tuning with QLoRA to predict best moves from FEN positions
@@ -37,7 +37,7 @@ This project implements an end-to-end training pipeline for fine-tuning a **Qwen
 flowchart TD
     A[Lichess Dataset] --> B[Data Pipeline]
     B --> C[2M Filtered Positions]
-    C --> D[SFT Training<br/>QLoRA Qwen3-1.7B]
+    C --> D[SFT Training<br/>QLoRA Qwen3-4B]
     D --> E[SFT Checkpoint]
     E --> F[GRPO RL Training<br/>Stockfish Reward]
     F --> G[RL Checkpoint]
@@ -61,7 +61,7 @@ flowchart TD
     end
 
     subgraph SFT["SFT — Supervised Fine-Tuning"]
-        S1["Qwen3-1.7B + QLoRA (lora_r=16, 4-bit)"]
+        S1["Qwen3-4B + QLoRA (lora_r=16, 4-bit)"]
         S2["Input: FEN → Output: Best Move (UCI)"]
         S3["Loss: CrossEntropy (next_token)"]
         S1 --- S2 --- S3
@@ -101,7 +101,7 @@ The GRPO reward function considers multiple chess-quality factors:
 
 - Python 3.10–3.12
 - [uv](https://docs.astral.sh/uv/) for dependency management
-- CUDA-compatible GPU (recommended: 8GB+ VRAM for Qwen3-1.7B QLoRA)
+- CUDA-compatible GPU (recommended: 16GB+ VRAM for Qwen3-4B QLoRA)
 - Stockfish chess engine (`sudo apt-get install stockfish`)
 - For optional FlashAttention: NVIDIA CUDA Toolkit with `nvcc` (not just the driver)
 
@@ -224,7 +224,7 @@ bash scripts/train_sft.sh --max-train-samples -1 --max-eval-samples -1
 
 # With custom options
 bash scripts/train_sft.sh \
-    --model Qwen/Qwen3-1.7B \
+    --model Qwen/Qwen3-4B \
     --data data/processed \
     --output checkpoints/sft \
     --batch-size 4 \
@@ -238,7 +238,7 @@ bash scripts/train_sft.sh \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config PATH` | — | YAML config file (see [YAML Config](#yaml-config-advanced)) |
-| `--model NAME` | `Qwen/Qwen3-1.7B` | HuggingFace model identifier |
+| `--model NAME` | `Qwen/Qwen3-4B` | HuggingFace model identifier |
 | `--data PATH` | `data/processed` | Path to processed dataset |
 | `--output DIR` | `checkpoints/sft` | Checkpoint output directory |
 | `--batch-size N` | `4` | Per-device training batch size |
@@ -359,7 +359,7 @@ print(results["vs_stockfish"]["estimated_elo"])
 ## 🌐 Web Application
 
 Play against your trained model in the browser. This project’s training scripts
-default to **`Qwen/Qwen3-1.7B`** (not Qwen-8B). Your LoRA adapters under
+default to **`Qwen/Qwen3-4B`**. Your LoRA adapters under
 `checkpoints/sft/final` or `checkpoints/rl/final` are fine-tunes of that base model.
 
 ### How to play (local)
@@ -381,7 +381,7 @@ Check that the real model id is reported:
 
 ```bash
 curl -s http://localhost:8000/health
-# expect: "model_loaded": true, "model_name": "Qwen/Qwen3-1.7B"
+# expect: "model_loaded": true, "model_name": "Qwen/Qwen3-4B"
 ```
 
 **Terminal 2 — frontend**:
@@ -394,7 +394,7 @@ npm run dev
 
 Open **http://localhost:3000**, click **New Game**, and drag pieces as White.
 The model replies after each of your moves. The page subtitle shows the loaded
-base model name (e.g. `Qwen/Qwen3-1.7B`).
+base model name (e.g. `Qwen/Qwen3-4B`).
 
 ### API Endpoints
 
@@ -542,7 +542,7 @@ cp .env.example .env
 
 Create a `config.yaml`:
 ```yaml
-model_name: Qwen/Qwen3-1.7B
+model_name: Qwen/Qwen3-4B
 lora_r: 32
 lora_alpha: 64
 batch_size: 8
@@ -560,7 +560,7 @@ bash scripts/train_sft.sh --config config.yaml
 
 Benchmark from [`evaluation_results/comparison.json`](evaluation_results/comparison.json)
 (default protocol: **20 games vs Stockfish depth 8**, **10 games vs random**,
-temperature `0.1`, base model `Qwen/Qwen3-1.7B`).
+temperature `0.1`, base model `Qwen/Qwen3-1.7B` — previous default, not 4B).
 
 ```bash
 bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final
@@ -628,7 +628,7 @@ Papers describing the core techniques this project implements:
 
 ```bibtex
 @software{qwen_chess_rl,
-  title = {Qwen Chess RL: Fine-tuning Qwen3-1.7B for Chess via SFT and GRPO},
+  title = {Qwen Chess RL: Fine-tuning Qwen3-4B for Chess via SFT and GRPO},
   author = {El Fayoumi, Ibrahim},
   year = {2026},
   url = {https://github.com/deep-science-ai/qwen-chess-rl}
@@ -643,4 +643,4 @@ Proprietary — Copyright ©2026 DSAI. All Rights Reserved.
 
 ---
 
-*Built with [Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B), [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [python-chess](https://python-chess.readthedocs.io/).*
+*Built with [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [python-chess](https://python-chess.readthedocs.io/).*

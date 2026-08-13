@@ -1,4 +1,4 @@
-"""qwen-chess-rl: Train Qwen (default Qwen3-1.7B) to play chess via SFT + GRPO."""
+"""qwen-chess-rl: Train Qwen (default Qwen3-4B) to play chess via SFT + GRPO."""
 
 import os
 
