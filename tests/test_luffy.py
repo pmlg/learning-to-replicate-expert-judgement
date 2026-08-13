@@ -16,6 +16,7 @@ import random
 import pytest
 import torch
 
+from qwen_chess_rl.training.rl.grpo import combine_onpolicy_offpolicy_loss
 from qwen_chess_rl.training.rl.luffy.buffer import ExperienceBuffer
 from qwen_chess_rl.training.rl.luffy.is_weights import (
     compute_is_weights,
@@ -268,15 +269,37 @@ class TestLuffyLoss:
         expected_keys = {"loss", "is_ratios", "is_clipped_ratios", "confidence_weights", "raw_is_loss"}
         assert set(result.keys()) == expected_keys
 
-    def test_offpolicy_weight_scaling(self):
-        policy = torch.randn(4)
-        behavior = torch.randn(4)
-        advantages = torch.randn(4)
 
-        result_half = compute_luffy_loss(policy, behavior, advantages, offpolicy_weight=0.5)
-        result_full = compute_luffy_loss(policy, behavior, advantages, offpolicy_weight=1.0)
+class TestCombineOnpolicyOffpolicyLoss:
+    """Test the sft_alpha blend between on-policy GRPO and off-policy LUFFY loss."""
 
-        # Full weight should be ~2x half weight
-        if result_half["loss"].abs() > 1e-8:
-            ratio = result_full["loss"].abs() / result_half["loss"].abs()
-            assert ratio == pytest.approx(2.0, rel=0.01)
+    def test_alpha_zero_is_pure_onpolicy(self):
+        onpolicy = torch.tensor(4.0)
+        offpolicy = torch.tensor(10.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=0.0)
+        assert combined.item() == pytest.approx(4.0)
+
+    def test_alpha_one_is_pure_offpolicy(self):
+        onpolicy = torch.tensor(4.0)
+        offpolicy = torch.tensor(10.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=1.0)
+        assert combined.item() == pytest.approx(10.0)
+
+    def test_alpha_blends_proportionally(self):
+        onpolicy = torch.tensor(4.0)
+        offpolicy = torch.tensor(10.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=0.5)
+        assert combined.item() == pytest.approx(0.5 * 4.0 + 0.5 * 10.0)
+
+    def test_none_onpolicy_falls_back_to_scaled_offpolicy(self):
+        offpolicy = torch.tensor(10.0)
+        combined = combine_onpolicy_offpolicy_loss(None, offpolicy, sft_alpha=0.5)
+        assert combined.item() == pytest.approx(5.0)
+
+    def test_none_offpolicy_falls_back_to_scaled_onpolicy(self):
+        onpolicy = torch.tensor(4.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, None, sft_alpha=0.5)
+        assert combined.item() == pytest.approx(2.0)
+
+    def test_both_none_returns_none(self):
+        assert combine_onpolicy_offpolicy_loss(None, None, sft_alpha=0.5) is None

@@ -122,22 +122,23 @@ def compute_luffy_loss(
     behavior_log_probs: torch.Tensor,
     advantages: torch.Tensor,
     is_clip: float = 0.2,
-    offpolicy_weight: float = 0.5,
     confidence_temp: float = 1.0,
 ) -> dict[str, torch.Tensor]:
-    """Compute the full LUFFY off-policy loss.
+    """Compute the LUFFY off-policy loss.
 
     Combines:
     1. IS-corrected policy gradient on off-policy traces.
     2. Confidence-based weighting to focus on uncertain positions.
-    3. Scaling by ``offpolicy_weight`` to balance with on-policy GRPO.
+
+    The returned loss is unweighted — balancing it against the on-policy
+    GRPO loss (via ``sft_alpha``) is the caller's responsibility, so this
+    function stays reusable outside that specific combination.
 
     Args:
         policy_log_probs: Log-probs from current policy π. Shape: (N,).
         behavior_log_probs: Log-probs from behaviour policy μ. Shape: (N,).
         advantages: Advantages for each trace. Shape: (N,).
         is_clip: IS clipping range.
-        offpolicy_weight: Overall weight for the off-policy loss term.
         confidence_temp: Temperature for confidence weighting.
 
     Returns:
@@ -159,10 +160,9 @@ def compute_luffy_loss(
     confidence_weights = 1.0 - confidence
 
     weighted_loss = (confidence_weights * is_loss).mean()
-    total_loss = offpolicy_weight * weighted_loss
 
     return {
-        "loss": total_loss,
+        "loss": weighted_loss,
         "is_ratios": ratios,
         "is_clipped_ratios": clipped_ratios,
         "confidence_weights": confidence_weights,

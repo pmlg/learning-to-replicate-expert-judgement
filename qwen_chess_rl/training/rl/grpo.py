@@ -13,7 +13,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from qwen_chess_rl.data.dataset import format_fen_prompt
 from qwen_chess_rl.training.rl.config import GRPOConfig
-from qwen_chess_rl.training.rl.reward import batch_compute_rewards
+from qwen_chess_rl.training.rl.reward import compute_episode_reward
+from qwen_chess_rl.training.rl.rollout import play_rollout
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,16 @@ def set_seed(seed: int):
 class FenPromptDataset(Dataset):
     """Minimal dataset that yields raw FEN strings for GRPO rollouts."""
 
-    def __init__(self, data_path: str | Path, split: str = "train"):
+    def __init__(
+        self,
+        data_path: str | Path,
+        split: str = "train",
+        max_samples: int = -1,
+        seed: int = 42,
+    ):
         self.dataset = load_from_disk(str(Path(data_path) / split))
+        if max_samples > 0 and len(self.dataset) > max_samples:
+            self.dataset = self.dataset.shuffle(seed=seed).select(range(max_samples))
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -204,91 +213,139 @@ def compute_advantages(
     return advantages
 
 
-def grpo_loss(
+def grpo_trajectory_loss(
     model,
     ref_model,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
-    generated_ids: list[torch.Tensor],
-    advantages: list[list[float]],
+    tokenizer,
+    trajectories: list,
+    advantages: list[float],
     cfg: GRPOConfig,
 ) -> torch.Tensor | None:
-    """Compute the GRPO loss: clipped surrogate objective + KL penalty.
+    """Compute the GRPO loss over full multi-ply rollout trajectories.
 
-    The loss combines:
-    1. Clipped importance-sampling policy gradient.
+    Generalizes the original single-move GRPO loss to credit an entire
+    rollout (see rollout.play_rollout): the trajectory-level advantage —
+    derived from the game's actual outcome, not just one move's quality —
+    is applied to the summed log-prob of *every* move the policy made
+    during that trajectory. Each ply has its own prompt (the FEN changes
+    move to move), so unlike the single-move version this tokenizes each
+    ply itself rather than taking pre-tokenized tensors.
+
+    The loss combines, per trajectory:
+    1. Clipped importance-sampling policy gradient on the summed log-probs.
     2. KL divergence penalty against the reference model.
 
     Args:
         model: Current policy model.
         ref_model: Reference model (SFT checkpoint, frozen).
-        input_ids: Tokenized input prompts.
-        attention_mask: Attention mask for prompts.
-        generated_ids: List of tensors, each containing generated token IDs.
-        advantages: Group-normalized advantages per generation.
+        tokenizer: HuggingFace tokenizer.
+        trajectories: One rollout.RolloutResult per sampled candidate.
+        advantages: Group-normalized advantage per trajectory (same order
+            and length as trajectories).
         cfg: GRPO configuration.
 
     Returns:
-        Scalar loss tensor, or ``None`` when no valid generations exist.
+        Scalar loss tensor, or ``None`` when no valid trajectories exist.
     """
     total_loss: torch.Tensor | None = None
     num_samples = 0
+    device = next(model.parameters()).device
 
-    current_idx = 0
-    for group_gen_ids, group_adv in zip(generated_ids, advantages):
-        for gen_ids, adv in zip(group_gen_ids, group_adv):
-            if gen_ids.numel() == 0:
+    for traj, adv in zip(trajectories, advantages):
+        gen_log_probs: torch.Tensor | None = None
+        ref_gen_log_probs: torch.Tensor | None = None
+
+        for prompt, move_uci in zip(traj.own_prompts, traj.own_moves):
+            move_id_list = tokenizer.encode(move_uci, add_special_tokens=False)
+            if not move_id_list:
                 continue
+            move_ids = torch.tensor(move_id_list, dtype=torch.long, device=device)
 
-            # Concatenate prompt + generation
-            full_input = torch.cat([input_ids[current_idx], gen_ids], dim=-1)
-            full_mask = torch.cat([
-                attention_mask[current_idx],
-                torch.ones_like(gen_ids),
-            ], dim=-1)
+            prompt_inputs = tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=cfg.max_length,
+            ).to(device)
+            full_input = torch.cat([prompt_inputs["input_ids"][0], move_ids], dim=-1)
+            full_mask = torch.cat(
+                [prompt_inputs["attention_mask"][0], torch.ones_like(move_ids)], dim=-1,
+            )
 
-            # Get log-probs from current policy
             outputs = model(full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0))
-            logits = outputs.logits
-            log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
-            gen_log_probs = log_probs[:, -len(gen_ids):, :].gather(
-                2, gen_ids.unsqueeze(0).unsqueeze(-1)
+            log_probs = F.log_softmax(outputs.logits[:, :-1, :], dim=-1)
+            ply_log_probs = log_probs[:, -len(move_ids):, :].gather(
+                2, move_ids.unsqueeze(0).unsqueeze(-1)
             ).squeeze(-1).sum()
 
-            # Get log-probs from reference model (no gradient)
             with torch.no_grad():
                 ref_outputs = ref_model(
-                    full_input.unsqueeze(0),
-                    attention_mask=full_mask.unsqueeze(0),
+                    full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0),
                 )
-                ref_logits = ref_outputs.logits
-                ref_log_probs = F.log_softmax(ref_logits[:, :-1, :], dim=-1)
-                ref_gen_log_probs = ref_log_probs[:, -len(gen_ids):, :].gather(
-                    2, gen_ids.unsqueeze(0).unsqueeze(-1)
+                ref_log_probs = F.log_softmax(ref_outputs.logits[:, :-1, :], dim=-1)
+                ply_ref_log_probs = ref_log_probs[:, -len(move_ids):, :].gather(
+                    2, move_ids.unsqueeze(0).unsqueeze(-1)
                 ).squeeze(-1).sum()
 
-            # Importance ratio
-            ratio = torch.exp(gen_log_probs - ref_gen_log_probs)
-            adv_t = torch.as_tensor(adv, device=ratio.device, dtype=ratio.dtype)
+            gen_log_probs = (
+                ply_log_probs if gen_log_probs is None else gen_log_probs + ply_log_probs
+            )
+            ref_gen_log_probs = (
+                ply_ref_log_probs if ref_gen_log_probs is None
+                else ref_gen_log_probs + ply_ref_log_probs
+            )
 
-            # Clipped surrogate objective
-            clipped_ratio = torch.clamp(ratio, 1 - cfg.clip_epsilon, 1 + cfg.clip_epsilon)
-            policy_loss = -torch.min(ratio * adv_t, clipped_ratio * adv_t)
+        if gen_log_probs is None:
+            continue
 
-            # KL penalty (from ref model)
-            kl_div = gen_log_probs - ref_gen_log_probs
-            kl_penalty = cfg.beta * kl_div
+        # Importance ratio, over the WHOLE trajectory's summed log-probs
+        ratio = torch.exp(gen_log_probs - ref_gen_log_probs)
+        adv_t = torch.as_tensor(adv, device=ratio.device, dtype=ratio.dtype)
 
-            sample_loss = policy_loss + kl_penalty
-            total_loss = sample_loss if total_loss is None else total_loss + sample_loss
-            num_samples += 1
+        # Clipped surrogate objective
+        clipped_ratio = torch.clamp(ratio, 1 - cfg.clip_epsilon, 1 + cfg.clip_epsilon)
+        policy_loss = -torch.min(ratio * adv_t, clipped_ratio * adv_t)
 
-        current_idx += 1
+        # KL penalty (from ref model)
+        kl_div = gen_log_probs - ref_gen_log_probs
+        kl_penalty = cfg.beta * kl_div
+
+        sample_loss = policy_loss + kl_penalty
+        total_loss = sample_loss if total_loss is None else total_loss + sample_loss
+        num_samples += 1
 
     if total_loss is None or num_samples == 0:
         return None
 
     return total_loss / num_samples
+
+
+def combine_onpolicy_offpolicy_loss(
+    onpolicy_loss: torch.Tensor | None,
+    offpolicy_loss: torch.Tensor | None,
+    sft_alpha: float,
+) -> torch.Tensor | None:
+    """Blend the on-policy GRPO loss with the off-policy LUFFY loss.
+
+    total = (1 - sft_alpha) * onpolicy_loss + sft_alpha * offpolicy_loss
+
+    Either input may be ``None`` (no on-policy samples this step, or LUFFY
+    disabled / nothing sampled from the buffer) — in that case the combined
+    loss falls back to whichever term is available, still scaled by
+    ``sft_alpha``.
+
+    Args:
+        onpolicy_loss: On-policy GRPO loss, or None.
+        offpolicy_loss: Off-policy LUFFY loss, or None.
+        sft_alpha: Ratio of off-policy to on-policy weight, in [0, 1].
+
+    Returns:
+        Combined loss tensor, or None if both inputs are None.
+    """
+    if onpolicy_loss is None and offpolicy_loss is None:
+        return None
+    if onpolicy_loss is None:
+        return sft_alpha * offpolicy_loss
+    if offpolicy_loss is None:
+        return (1 - sft_alpha) * onpolicy_loss
+    return (1 - sft_alpha) * onpolicy_loss + sft_alpha * offpolicy_loss
 
 
 def train(cfg: GRPOConfig):
@@ -319,7 +376,12 @@ def train(cfg: GRPOConfig):
         param.requires_grad = False
 
     # Load raw FENs (do not reuse SFT token tensors — GRPO needs prompt/FEN alignment)
-    dataset = FenPromptDataset(data_path="data/processed", split="train")
+    dataset = FenPromptDataset(
+        data_path=cfg.data_path,
+        split="train",
+        max_samples=cfg.max_train_samples,
+        seed=cfg.seed,
+    )
     dataloader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
@@ -363,17 +425,7 @@ def train(cfg: GRPOConfig):
                 logger.warning("Skipping empty FEN batch")
                 continue
 
-            # Prompt tensors must match what generate_moves uses
-            prompts = [format_fen_prompt(fen) for fen in fens_batch]
-            prompt_inputs = tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=cfg.max_length,
-            ).to(model.device)
-
-            # Generate candidate moves
+            # Generate first-move candidates per FEN
             all_moves = generate_moves(model, tokenizer, fens_batch, cfg)
 
             if (global_step + 1) % cfg.logging_steps == 0:
@@ -384,41 +436,48 @@ def train(cfg: GRPOConfig):
                     global_step + 1, sample_fen, sample_moves,
                 )
 
-            # Compute rewards using Stockfish
+            # Play out each candidate — reward is tied to the game's
+            # eventual outcome (win/loss/draw), not just this one move.
+            # A random share of candidates play to a natural conclusion;
+            # the rest are capped at rollout_max_plies for cost.
+            trajectories = []
             all_rewards = []
             for fen, moves in zip(fens_batch, all_moves):
-                positions = [(fen, m) for m in moves if m]
-                rewards = batch_compute_rewards(positions, eval_depth=cfg.eval_depth)
-                # Extract total_reward values
-                r_values = [r["total_reward"] for r in rewards]
-                # Pad to num_generations with -10 if no valid moves
-                while len(r_values) < len(moves):
-                    r_values.append(-10.0)
-                all_rewards.append(r_values)
+                group_trajectories = []
+                group_rewards = []
+                for move_uci in moves:
+                    traj = None
+                    if move_uci:
+                        full_game = random.random() < cfg.rollout_full_game_ratio
+                        max_plies = None if full_game else cfg.rollout_max_plies
+                        traj = play_rollout(model, tokenizer, fen, move_uci, cfg, max_plies=max_plies)
+                    if traj is None:
+                        group_trajectories.append(None)
+                        group_rewards.append(-10.0)  # illegal or empty move
+                    else:
+                        group_trajectories.append(traj)
+                        group_rewards.append(
+                            compute_episode_reward(traj.outcome, traj.cutoff_eval, traj.starting_eval)
+                        )
+                trajectories.append(group_trajectories)
+                all_rewards.append(group_rewards)
 
-            # Compute advantages
+            # Compute advantages (group-normalized per starting FEN)
             advantages = compute_advantages(all_rewards)
 
-            # Compute GRPO loss
-            generated_ids = []
-            for moves in all_moves:
-                gen_ids = []
-                for move_uci in moves:
-                    if move_uci:
-                        ids = tokenizer.encode(
-                            move_uci,
-                            add_special_tokens=False,
-                            return_tensors="pt",
-                        )
-                        gen_ids.append(ids.squeeze(0).to(model.device))
-                    else:
-                        gen_ids.append(torch.tensor([], dtype=torch.long, device=model.device))
-                generated_ids.append(gen_ids)
+            # Flatten groups for the loss — rewards are already
+            # group-normalized, so each (trajectory, advantage) pair can be
+            # treated independently from here.
+            flat_trajectories = []
+            flat_advantages = []
+            for group_traj, group_adv in zip(trajectories, advantages):
+                for traj, adv in zip(group_traj, group_adv):
+                    if traj is not None:
+                        flat_trajectories.append(traj)
+                        flat_advantages.append(adv)
 
-            loss = grpo_loss(
-                model, ref_model,
-                prompt_inputs["input_ids"], prompt_inputs["attention_mask"],
-                generated_ids, advantages, cfg,
+            loss = grpo_trajectory_loss(
+                model, ref_model, tokenizer, flat_trajectories, flat_advantages, cfg,
             )
 
             # --- LUFFY off-policy loss term ---
@@ -431,7 +490,9 @@ def train(cfg: GRPOConfig):
                 )
                 luffy_loss_tensor = luffy_result.get("loss_tensor")
                 if luffy_loss_tensor is not None:
-                    loss = luffy_loss_tensor if loss is None else loss + luffy_loss_tensor
+                    loss = combine_onpolicy_offpolicy_loss(
+                        loss, luffy_loss_tensor, cfg.sft_alpha
+                    )
                 luffy_metrics = {
                     "luffy_is_ratio": luffy_result.get("mean_is_ratio", 0.0),
                     "luffy_confidence": luffy_result.get("mean_confidence_weight", 0.0),
@@ -492,8 +553,25 @@ def main():
     parser = argparse.ArgumentParser(description="GRPO train chess-playing model")
     parser.add_argument("--config", type=str, help="YAML config file")
     parser.add_argument("--sft-checkpoint", type=str, default=GRPOConfig.sft_checkpoint)
+    parser.add_argument("--data-path", type=str, default=GRPOConfig.data_path)
     parser.add_argument("--steps", type=int, default=GRPOConfig.num_training_steps)
     parser.add_argument("--lr", type=float, default=GRPOConfig.learning_rate)
+    parser.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=GRPOConfig.max_train_samples,
+        help="Cap FEN prompts sampled for rollouts (-1 = full dataset)",
+    )
+    parser.add_argument(
+        "--sft-alpha",
+        type=float,
+        default=None,
+        help=(
+            "Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: "
+            "total = (1 - sft_alpha) * onpolicy + sft_alpha * offpolicy. "
+            f"0 = pure GRPO, 1 = pure LUFFY imitation (default: {GRPOConfig.sft_alpha})."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = GRPOConfig()
@@ -506,9 +584,13 @@ def main():
                     setattr(cfg, key, value)
 
     cfg.sft_checkpoint = args.sft_checkpoint or cfg.sft_checkpoint
+    cfg.data_path = args.data_path or cfg.data_path
     cfg.num_training_steps = args.steps or cfg.num_training_steps
+    cfg.max_train_samples = args.max_train_samples
     if args.lr:
         cfg.learning_rate = args.lr
+    if args.sft_alpha is not None:
+        cfg.sft_alpha = args.sft_alpha
 
     train(cfg)
 

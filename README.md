@@ -68,11 +68,12 @@ flowchart TD
     end
 
     subgraph GRPO["GRPO — Group Relative Policy Optimization"]
-        G1["Generate 8 moves per position"]
-        G2["Evaluate via Stockfish reward"]
-        G3["Normalize advantages within group"]
-        G4["Update policy (clipped surrogate + KL)"]
-        G1 --> G2 --> G3 --> G4
+        G1["Generate 8 candidate first moves"]
+        G2["Play out each into a rollout vs. weak Stockfish"]
+        G3["Reward = game outcome (win/loss/draw or capped eval)"]
+        G4["Normalize advantages within group"]
+        G5["Update policy (clipped surrogate + KL, whole trajectory)"]
+        G1 --> G2 --> G3 --> G4 --> G5
     end
 
     Data --> SFT --> GRPO
@@ -82,16 +83,37 @@ flowchart TD
 
 ### Reward Function
 
-The GRPO reward function considers multiple chess-quality factors:
+GRPO's primary reward signal is **the actual outcome of the game**, not just
+the quality of one isolated move — a candidate move is played out into a
+full multi-ply rollout against a deliberately weakened Stockfish opponent
+(see [rollout.py](qwen_chess_rl/training/rl/rollout.py)), and the reward is
+tied to whether that rollout was won, lost, or drawn:
 
-| Factor | Reward | Description |
-|--------|--------|-------------|
-| Legal move | +5 | The proposed move is legal |
-| Centipawn loss | 0 to -10 | Scaled penalty proportional to move quality loss |
-| Checkmate | +10 | The move delivers checkmate |
-| Blunder | -5 | Additional penalty if centipawn loss > 100 |
-| Draw avoidance | -3 | Moving into drawing position (stalemate/insufficient material) |
-| Repetition | -2 | Moving into threefold repetition |
+| Outcome | Reward | Description |
+|---------|--------|-------------|
+| Win | `+20` | The policy's side won the rollout |
+| Loss | `-20` | The policy's side lost, or played an illegal move mid-game |
+| Draw (from a balanced/winning start) | `-5` | Mildly discouraged — failed to convert an advantage |
+| Draw (salvaged from a clearly losing start) | `+10` | Winning wasn't realistic there, so holding a draw is a good outcome, not a failure |
+| Capped (no natural end) | `eval / 100`, clamped to `±20` | Stockfish's eval at the truncation ply, from the policy's perspective — can be *positive*, unlike a single-move penalty |
+
+A configurable fraction of rollouts (`rollout_full_game_ratio`, default
+`0.5`) play to a natural conclusion (checkmate/draw); the rest are capped
+at `rollout_max_plies` (default `10`) plies for cost, using Stockfish's eval
+at the cutoff as a proxy return. The opponent uses a shallow search
+(`opponent_depth`, default `3`) — a full-strength opponent would rarely
+lose to a still-learning policy, starving training of win signal.
+
+Whether a draw counts as "salvaged" is decided by Stockfish's eval of the
+*starting* position (before any move) — below `LOSING_EVAL_THRESHOLD`
+(`-150` centipawns) counts as clearly lost. Win/loss rewards are unaffected;
+only a draw's value depends on the starting position.
+
+A single move's intrinsic quality (legality, centipawn loss vs. Stockfish's
+top choice, blunders, immediate checkmate/repetition) is still scored by
+[`compute_reward`](qwen_chess_rl/training/rl/reward.py) and used elsewhere
+(e.g. LUFFY's off-policy traces) — see that function's docstring for its
+component breakdown.
 
 ---
 
@@ -287,9 +309,12 @@ bash scripts/train_grpo.sh \
 |------|---------|-------------|
 | `--config PATH` | — | YAML config file (see [YAML Config](#yaml-config-advanced)) |
 | `--sft-checkpoint PATH` | `checkpoints/sft/final` | SFT checkpoint to start RL from |
+| `--data PATH` | `data/processed` | Processed dataset for GRPO rollout prompts — independent of SFT's `--data`, can point at a different dataset |
 | `--output DIR` | `checkpoints/rl` | RL checkpoint output directory |
 | `--steps N` | `1000` | Number of GRPO training steps |
 | `--lr RATE` | `5e-6` | Peak learning rate |
+| `--sft-alpha RATIO` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `(1 - sft_alpha) * onpolicy + sft_alpha * offpolicy`. `0` = pure GRPO, `1` = pure LUFFY imitation |
+| `--max-train-samples N` | `500000` | Cap on FEN prompts sampled for rollouts (`-1` = full dataset) |
 
 Requires `STOCKFISH_PATH` (default `stockfish`) to point to a working Stockfish binary — the script warns if it can't find one.
 
@@ -303,6 +328,9 @@ Requires `STOCKFISH_PATH` (default `stockfish`) to point to a working Stockfish 
 | `batch_size` | 8 | Prompts per training batch |
 | `ppo_epochs` | 4 | Inner PPO update iterations |
 | `temperature` | 1.0 | Move sampling temperature |
+| `rollout_full_game_ratio` | 0.5 | Fraction of candidates per step played to a natural conclusion vs. capped |
+| `rollout_max_plies` | 10 | Ply cap for the capped share of rollouts |
+| `opponent_depth` | 3 | Stockfish search depth for the rollout opponent (deliberately shallow) |
 
 ---
 

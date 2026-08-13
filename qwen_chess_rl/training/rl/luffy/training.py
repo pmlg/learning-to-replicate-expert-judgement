@@ -112,7 +112,7 @@ def prepare_luffy_buffer(cfg: GRPOConfig) -> ExperienceBuffer:
         )
 
         # Try to load FENs from the processed dataset
-        fens = _load_dataset_fens()
+        fens = _load_dataset_fens(cfg.data_path)
         if fens:
             # Subsample to buffer capacity for efficiency
             max_traces = min(cfg.buffer_capacity, len(fens))
@@ -241,7 +241,6 @@ def luffy_offpolicy_loss(
         behavior_log_probs,
         advantages,
         is_clip=cfg.is_clip,
-        offpolicy_weight=cfg.offpolicy_weight,
         confidence_temp=cfg.confidence_temp,
     )
 

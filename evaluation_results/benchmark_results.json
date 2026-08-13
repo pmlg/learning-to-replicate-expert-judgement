@@ -1,5 +1,5 @@
 {
-  "checkpoint": "checkpoints/rl/final/",
+  "checkpoint": "checkpoints/sft/final/",
   "temperature": 0.1,
   "vs_stockfish": {
     "wins": 0,
@@ -8,14 +8,14 @@
     "win_rate": 0.0,
     "draw_rate": 0.0,
     "loss_rate": 1.0,
-    "avg_game_length": 47.5,
+    "avg_game_length": 50.9,
     "total_games": 20,
     "estimated_elo": 1600
   },
   "vs_random": {
     "wins": 0,
-    "draws": 6,
-    "losses": 4,
+    "draws": 10,
+    "losses": 0,
     "win_rate": 0.0,
     "total_games": 10
   },

@@ -18,6 +18,30 @@ DRAW_AVOIDANCE_BONUS = 3.0
 REPETITION_AVOIDANCE_BONUS = 2.0
 MAX_CP_PENALTY = -10.0
 
+# Episode-outcome reward constants (multi-ply rollouts, see rollout.py).
+# Winning the game is the dominant objective — its magnitude exceeds
+# anything a single move can score under compute_reward() above, so GRPO's
+# group-relative advantage is driven primarily by game outcome, not just
+# per-move soundness.
+WIN_REWARD = 20.0
+LOSS_REWARD = -20.0
+DRAW_REWARD = -5.0  # mildly discouraged, but far better than losing
+# For capped (non-terminated) rollouts, the eval at the cutoff ply (in
+# centipawns, from the policy's perspective) is scaled onto the same range
+# as WIN/LOSS_REWARD so capped and full-game trajectories within the same
+# GRPO group remain comparable.
+CUTOFF_EVAL_SCALE = 100.0
+CUTOFF_EVAL_CAP = 20.0
+
+# A draw's value depends on context: failing to convert a winning/equal
+# position into a win is still discouraged (DRAW_REWARD), but salvaging a
+# draw from a position that was already clearly lost is a genuinely good
+# outcome — winning isn't realistic there, so the objective becomes "don't
+# lose." LOSING_EVAL_THRESHOLD (centipawns, policy's perspective) is the
+# rough cutoff for "clearly worse" used to tell the two cases apart.
+LOSING_EVAL_THRESHOLD = -150.0
+DRAW_REWARD_WHEN_LOSING = 10.0
+
 
 def _find_stockfish() -> str | None:
     """Locate the Stockfish engine binary.
@@ -246,6 +270,44 @@ def compute_reward(
         "best_move": best_move_uci,
         "cp_loss": cp_loss,
     }
+
+
+def compute_episode_reward(
+    outcome: Optional[str],
+    cutoff_eval: Optional[float] = None,
+    starting_eval: Optional[float] = None,
+) -> float:
+    """Convert a rollout's terminal outcome or cutoff eval into a scalar reward.
+
+    Args:
+        outcome: 'win', 'loss', 'draw' if the game reached a natural
+            conclusion during the rollout, or None if it was truncated
+            (capped rollout) before ending.
+        cutoff_eval: Centipawn evaluation at the truncation point, from the
+            policy's perspective. Only used when ``outcome`` is None.
+        starting_eval: Centipawn evaluation of the position *before* the
+            rollout began, from the policy's perspective. Only used when
+            ``outcome`` is 'draw' — if the starting position was already
+            clearly lost (below LOSING_EVAL_THRESHOLD), winning wasn't a
+            realistic objective, so salvaging a draw is rewarded well
+            instead of just "less bad than losing".
+
+    Returns:
+        Scalar reward on the same scale as WIN_REWARD/LOSS_REWARD, so
+        capped and full-game trajectories remain comparable within a
+        GRPO group.
+    """
+    if outcome == "win":
+        return WIN_REWARD
+    if outcome == "loss":
+        return LOSS_REWARD
+    if outcome == "draw":
+        if starting_eval is not None and starting_eval < LOSING_EVAL_THRESHOLD:
+            return DRAW_REWARD_WHEN_LOSING
+        return DRAW_REWARD
+    if cutoff_eval is None:
+        return 0.0
+    return max(-CUTOFF_EVAL_CAP, min(CUTOFF_EVAL_CAP, cutoff_eval / CUTOFF_EVAL_SCALE))
 
 
 def batch_compute_rewards(

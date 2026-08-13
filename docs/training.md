@@ -21,13 +21,23 @@ bash scripts/train_sft.sh
 
 ### Stage 2: GRPO (Reinforcement Learning)
 
-Improves the SFT model using GRPO with Stockfish as the reward function.
+Improves the SFT model using GRPO, with reward tied to actually winning
+games against a shallow Stockfish opponent — not just per-move quality.
 
 **Key concepts:**
-- For each position, the model generates 8 candidate moves
-- Stockfish evaluates each move's quality
+- For each position, the model generates 8 candidate first moves
+- Each candidate is played out into a full rollout (see
+  [rollout.py](../qwen_chess_rl/training/rl/rollout.py)) against Stockfish
+  at a deliberately weak search depth (`opponent_depth`); a share of
+  rollouts (`rollout_full_game_ratio`) play to a natural conclusion, the
+  rest are capped at `rollout_max_plies` and scored by Stockfish's eval at
+  the cutoff
+- Reward is win/loss/draw for concluded rollouts, or a scaled eval for
+  capped ones (see `reward.compute_episode_reward`)
 - Rewards are normalized within the group (zero mean, unit variance)
-- The policy is updated with a clipped surrogate objective + KL penalty
+- The policy is updated with a clipped surrogate objective + KL penalty,
+  applied to the summed log-probs of every move the policy made during the
+  rollout (`grpo_trajectory_loss`), not just the first
 
 ### Stage 2b: LUFFY Off-Policy Guidance (Optional)
 
@@ -51,7 +61,7 @@ Stockfish clone.
 | `use_luffy` | `False` | Master toggle for LUFFY augmentation |
 | `trace_ratio` | `0.3` | Fraction of off-policy traces per batch |
 | `is_clip` | `0.2` | IS weight clipping range |
-| `offpolicy_weight` | `0.5` | Weight for off-policy loss term |
+| `sft_alpha` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `total = (1 - sft_alpha) * onpolicy + sft_alpha * offpolicy` |
 | `trace_engine_depth` | `18` | Stockfish depth for trace generation |
 | `confidence_temp` | `1.0` | Temperature for anti-imitation weighting |
 | `entropy_beta` | `0.01` | Entropy bonus (encourages exploration) |
@@ -70,7 +80,7 @@ cat > configs/luffy_grpo.yaml << 'EOF'
 use_luffy: true
 trace_ratio: 0.3
 is_clip: 0.2
-offpolicy_weight: 0.5
+sft_alpha: 0.85
 trace_path: data/traces.jsonl
 num_training_steps: 1000
 EOF
