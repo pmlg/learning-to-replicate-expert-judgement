@@ -89,20 +89,29 @@ full multi-ply rollout against a deliberately weakened Stockfish opponent
 (see [rollout.py](qwen_chess_rl/training/rl/rollout.py)), and the reward is
 tied to whether that rollout was won, lost, or drawn:
 
+Only a decisive outcome carries any reward — a "normal" undecided move earns
+nothing, and neither does mere legality (`LEGAL_MOVE_BONUS = 0`):
+
 | Outcome | Reward | Description |
 |---------|--------|-------------|
 | Win | `+20` | The policy's side won the rollout |
 | Loss | `-20` | The policy's side lost, or played an illegal move mid-game |
-| Draw (from a balanced/winning start) | `-5` | Mildly discouraged — failed to convert an advantage |
+| Draw (from a balanced/winning start) | `0` | Neutral — failed to convert an advantage, but not punished |
 | Draw (salvaged from a clearly losing start) | `+10` | Winning wasn't realistic there, so holding a draw is a good outcome, not a failure |
-| Capped (no natural end) | `eval / 100`, clamped to `±20` | Stockfish's eval at the truncation ply, from the policy's perspective — can be *positive*, unlike a single-move penalty |
+| Capped (no natural end reached) | `0` | Just a normal, undecided move — no reward either way |
 
 A configurable fraction of rollouts (`rollout_full_game_ratio`, default
 `0.5`) play to a natural conclusion (checkmate/draw); the rest are capped
-at `rollout_max_plies` (default `10`) plies for cost, using Stockfish's eval
-at the cutoff as a proxy return. The opponent uses a shallow search
+at `rollout_max_plies` (default `10`) plies for cost and score `0`, since
+they never reached a decisive result. The opponent uses a shallow search
 (`opponent_depth`, default `3`) — a full-strength opponent would rarely
 lose to a still-learning policy, starving training of win signal.
+
+Note: since capped rollouts always score `0` regardless of position, they
+contribute no learning signal by themselves — only full-game rollouts (and
+any capped candidate that happens to end early via checkmate) drive
+training. If you're not seeing enough win/loss signal, consider raising
+`rollout_full_game_ratio` toward `1.0`.
 
 Whether a draw counts as "salvaged" is decided by Stockfish's eval of the
 *starting* position (before any move) — below `LOSING_EVAL_THRESHOLD`

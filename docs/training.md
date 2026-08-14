@@ -30,10 +30,12 @@ games against a shallow Stockfish opponent — not just per-move quality.
   [rollout.py](../qwen_chess_rl/training/rl/rollout.py)) against Stockfish
   at a deliberately weak search depth (`opponent_depth`); a share of
   rollouts (`rollout_full_game_ratio`) play to a natural conclusion, the
-  rest are capped at `rollout_max_plies` and scored by Stockfish's eval at
-  the cutoff
-- Reward is win/loss/draw for concluded rollouts, or a scaled eval for
-  capped ones (see `reward.compute_episode_reward`)
+  rest are capped at `rollout_max_plies` for cost
+- Only a decisive outcome earns reward (see `reward.compute_episode_reward`):
+  win is the only positive score, loss is a heavy penalty, a draw is
+  neutral unless salvaged from a clearly lost position (then rewarded).
+  A capped rollout that never reached a decisive result — "just a normal
+  move" — scores 0, same as mere legality
 - Rewards are normalized within the group (zero mean, unit variance)
 - The policy is updated with a clipped surrogate objective + KL penalty,
   applied to the summed log-probs of every move the policy made during the

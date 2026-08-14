@@ -17,9 +17,9 @@ import pytest
 import qwen_chess_rl.training.rl.rollout as rollout_mod
 from qwen_chess_rl.training.rl.config import GRPOConfig
 from qwen_chess_rl.training.rl.reward import (
-    CUTOFF_EVAL_CAP,
     DRAW_REWARD,
     DRAW_REWARD_WHEN_LOSING,
+    LEGAL_MOVE_BONUS,
     LOSING_EVAL_THRESHOLD,
     LOSS_REWARD,
     WIN_REWARD,
@@ -51,20 +51,17 @@ class TestComputeEpisodeReward:
     def test_draw(self):
         assert compute_episode_reward("draw") == DRAW_REWARD
 
-    def test_capped_no_eval_is_neutral(self):
-        assert compute_episode_reward(None, cutoff_eval=None) == 0.0
+    def test_capped_outcome_gets_no_reward(self):
+        # A capped rollout ("just a normal move") carries no reward at all —
+        # not even a graded signal from the position's eval at the cutoff.
+        assert compute_episode_reward(None) == 0.0
 
-    def test_capped_positive_eval_scales_positively(self):
-        # This is the bug being fixed relative to the old single-move
-        # reward: being ahead should score positively, not just "0 penalty".
-        assert compute_episode_reward(None, cutoff_eval=50) == pytest.approx(0.5)
+    def test_legal_move_bonus_is_zero(self):
+        # Legality alone earns nothing — only game outcome matters.
+        assert LEGAL_MOVE_BONUS == 0.0
 
-    def test_capped_negative_eval_scales_negatively(self):
-        assert compute_episode_reward(None, cutoff_eval=-300) == pytest.approx(-3.0)
-
-    def test_capped_eval_is_capped_at_cutoff_eval_cap(self):
-        assert compute_episode_reward(None, cutoff_eval=1_000_000) == CUTOFF_EVAL_CAP
-        assert compute_episode_reward(None, cutoff_eval=-1_000_000) == -CUTOFF_EVAL_CAP
+    def test_draw_from_balanced_start_is_neutral_not_penalized(self):
+        assert DRAW_REWARD == 0.0
 
     def test_win_dominates_any_single_move_reward(self):
         # Winning must be worth strictly more than the largest score a
