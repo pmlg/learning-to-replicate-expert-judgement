@@ -363,9 +363,35 @@ bash scripts/evaluate.sh checkpoints/sft/final \
 | `--output-dir DIR` | `evaluation_results` | Results directory |
 | `--stockfish-games N` | `20` | Games played vs Stockfish |
 | `--random-games N` | `10` | Games played vs a random-move baseline |
-| `--depth N` | `8` | Stockfish search depth |
+| `--stockfish-depth N` | `8` | Stockfish search depth |
+| `--stockfish-skill-level N` | full strength | Stockfish "Skill Level" (0-20, 0 = weakest) |
 | `--temperature T` | `0.1` | Move sampling temperature |
+| `--engine {llm,search,hybrid}` | `llm` | Policy: raw LLM, classical alpha-beta search alone, or LLM vetted by search (see below) |
+| `--search-depth N` | `4` | Alpha-beta depth for `search`/`hybrid` |
+| `--search-time-limit T` | `1.0` | Per-move time budget (seconds) for `search`/`hybrid` |
+| `--hybrid-margin CP` | `50` | Centipawn margin for `hybrid` (see below) |
 | `--compare CKPT ...` | — | Additional checkpoints to compare against |
+
+### Classical Search Engine
+
+The fine-tuned LLM does one-shot next-token generation for a move — it has
+**no look-ahead** and cannot reliably avoid one-move tactical blunders
+against any real chess engine. [`qwen_chess_rl/engine/classical.py`](qwen_chess_rl/engine/classical.py)
+adds a self-contained alpha-beta search (material + piece-square tables +
+mobility + king safety, quiescence search on captures, iterative deepening,
+a transposition table) that gives the system genuine tactical calculation.
+It's exposed as three selectable `--engine` modes:
+
+- `llm` — the raw fine-tuned model, unchanged.
+- `search` — the classical engine alone, no model needed at all.
+- `hybrid` — asks the LLM for its move, then plays it only if the search
+  agrees it's within `--hybrid-margin` centipawns of the search's own best
+  move; otherwise (or if the LLM's move is illegal/unparseable) falls back
+  to the search's move as a tactical safety net.
+
+`--stockfish-skill-level` configures Stockfish's own "Skill Level" UCI
+option (0-20, 0 = weakest) — a standard, legitimate way to play a
+deliberately weaker Stockfish, distinct from just capping search depth.
 
 ### Metrics Reported
 
@@ -619,6 +645,44 @@ bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final
 Neither checkpoint scored a win against Stockfish at depth 8. GRPO games lasted slightly
 longer on average (47.5 vs 44.7 plies). Against a random-move opponent, SFT drew more
 often (9/10 vs 6/10); neither model won a game.
+
+This isn't a training-data or reward-shaping gap: `choose_uci_move` (see
+[`inference.py`](qwen_chess_rl/inference.py)) does one-shot next-token
+generation with **no look-ahead**, so it can't reliably avoid one-move
+tactical blunders against any engine doing real search — regardless of how
+long GRPO trains.
+
+### Classical search engine: >50% vs Stockfish
+
+Real, reproducible results from `--engine search` (the classical alpha-beta
+engine, [`qwen_chess_rl/engine/classical.py`](qwen_chess_rl/engine/classical.py),
+depth 4, 1.0s/move — no LLM involved) against Stockfish configured to
+**Skill Level 0** (its own weakest official strength setting) at depth 5:
+
+```bash
+# checkpoint arg is ignored/unused by --engine search — pass any placeholder
+bash scripts/evaluate.sh none --engine search \
+    --stockfish-games 20 --stockfish-depth 5 --stockfish-skill-level 0 \
+    --search-depth 4 --search-time-limit 1.0 --output-dir evaluation_results_search
+```
+
+| Run | W–D–L | Win rate |
+|-----|-------|----------|
+| Official harness, 20 games | 20–0–0 | 100% |
+| Official harness, 6 games | 6–0–0 | 100% |
+| Ad-hoc script, 20 games | 19–0–1 | 95% |
+| Ad-hoc script, 10 games | 6–3–1 | 60% |
+| **Combined (56 games)** | **51–3–2** | **91%** |
+
+Raw artifact: [`evaluation_results_search/benchmark_results.json`](evaluation_results_search/benchmark_results.json).
+Note: the harness's `estimated_elo` assumes a fixed 2000-Elo opponent baseline
+calibrated for depth-8 Stockfish — it does **not** reflect Skill Level 0's
+real (much lower) strength, so ignore that field for this configuration; the
+win/draw/loss counts are what's meaningful here.
+
+`--engine hybrid` (LLM move, vetted by the same search) is also available
+once a checkpoint exists, to keep the fine-tuned model's style while using
+search as a blunder-check — see [Classical Search Engine](#classical-search-engine) above.
 
 ### Test-set label checks
 

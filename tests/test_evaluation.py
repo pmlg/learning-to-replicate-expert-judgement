@@ -1,13 +1,51 @@
 """Tests for the reward function and evaluation metrics."""
 
+import chess
 import pytest
 
 from qwen_chess_rl.evaluation.metrics import (
-    legal_move_percentage,
     compute_win_rate,
     estimate_elo,
+    legal_move_percentage,
     puzzle_accuracy,
 )
+from qwen_chess_rl.evaluation.stockfish_eval import play_game
+
+
+class _ScriptedPlayer:
+    """Plays a fixed sequence of UCI moves, then fails (returns None)."""
+
+    def __init__(self, moves):
+        self.moves = list(moves)
+
+    def choose_move(self, board: chess.Board):
+        if not self.moves:
+            return None
+        uci = self.moves.pop(0)
+        return chess.Move.from_uci(uci)
+
+
+class TestPlayGameIllegalMoveAttribution:
+    """Whoever fails to produce a legal move forfeits — not always white.
+
+    Regression test for a bug where any illegal-move termination was scored
+    as a "loss" from white's perspective regardless of which side actually
+    failed to move.
+    """
+
+    def test_black_failure_is_a_win_for_white(self):
+        white = _ScriptedPlayer(["e2e4"])
+        black = _ScriptedPlayer([])  # fails immediately on its first move
+        result = play_game(white, black)
+        assert result["termination"] == "illegal_move"
+        assert result["result"] == "win"
+
+    def test_white_failure_is_a_loss_for_white(self):
+        white = _ScriptedPlayer([])  # fails immediately on its first move
+        black = _ScriptedPlayer([])
+        result = play_game(white, black)
+        assert result["termination"] == "illegal_move"
+        assert result["result"] == "loss"
 
 
 class TestLegalMovePercentage:

@@ -3,15 +3,14 @@
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from qwen_chess_rl.evaluation.metrics import compute_all_metrics, puzzle_accuracy
+from qwen_chess_rl.evaluation.metrics import compute_all_metrics
 from qwen_chess_rl.evaluation.stockfish_eval import (
-    evaluate_vs_stockfish,
     evaluate_vs_random,
+    evaluate_vs_stockfish,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,12 @@ def run_full_benchmark(
     stockfish_games: int = 20,
     random_games: int = 10,
     stockfish_depth: int = 8,
+    stockfish_skill_level: int | None = None,
     temperature: float = 0.1,
+    engine: str = "llm",
+    search_depth: int = 4,
+    search_time_limit: float | None = 1.0,
+    hybrid_margin: float = 50.0,
 ) -> dict:
     """Run the complete evaluation benchmark suite.
 
@@ -90,12 +94,22 @@ def run_full_benchmark(
     - Puzzle accuracy (if puzzle dataset available)
 
     Args:
-        checkpoint_path: Path to model checkpoint.
+        checkpoint_path: Path to model checkpoint. Only loaded when
+            ``engine`` needs it ("llm" or "hybrid") — "search" plays without
+            any model.
         output_dir: Directory for evaluation results.
         stockfish_games: Number of games vs Stockfish.
         random_games: Number of games vs random player.
         stockfish_depth: Stockfish analysis depth.
+        stockfish_skill_level: Stockfish "Skill Level" (0-20, 0 = weakest),
+            or None for full strength at the given depth.
         temperature: Model sampling temperature.
+        engine: Which policy plays: "llm", "search", or "hybrid" — see
+            ``qwen_chess_rl.evaluation.stockfish_eval.evaluate_vs_stockfish``.
+        search_depth: Alpha-beta depth for "search"/"hybrid".
+        search_time_limit: Per-move wall-clock budget (seconds) for
+            "search"/"hybrid".
+        hybrid_margin: Centipawn margin for "hybrid".
 
     Returns:
         Dictionary with all evaluation results.
@@ -103,20 +117,29 @@ def run_full_benchmark(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    model, tokenizer = load_model_for_eval(checkpoint_path)
+    model, tokenizer = (None, None) if engine == "search" else load_model_for_eval(checkpoint_path)
 
     results = {
         "checkpoint": checkpoint_path,
         "temperature": temperature,
+        "engine": engine,
     }
 
     # 1. Evaluate vs Stockfish
-    logger.info("=== Evaluating vs Stockfish (depth=%s, %s games) ===", stockfish_depth, stockfish_games)
+    logger.info(
+        "=== Evaluating vs Stockfish (depth=%s, skill=%s, engine=%s, %s games) ===",
+        stockfish_depth, stockfish_skill_level, engine, stockfish_games,
+    )
     sf_results = evaluate_vs_stockfish(
         model, tokenizer,
         num_games=stockfish_games,
         stockfish_depth=stockfish_depth,
+        stockfish_skill_level=stockfish_skill_level,
         temperature=temperature,
+        engine=engine,
+        search_depth=search_depth,
+        search_time_limit=search_time_limit,
+        hybrid_margin=hybrid_margin,
     )
     results["vs_stockfish"] = sf_results
     logger.info("Stockfish results: %s", sf_results)
@@ -127,6 +150,10 @@ def run_full_benchmark(
         model, tokenizer,
         num_games=random_games,
         temperature=temperature,
+        engine=engine,
+        search_depth=search_depth,
+        search_time_limit=search_time_limit,
+        hybrid_margin=hybrid_margin,
     )
     results["vs_random"] = random_results
     logger.info("Random results: %s", random_results)
@@ -135,8 +162,8 @@ def run_full_benchmark(
     test_path = Path("data/processed/test")
     if test_path.exists():
         logger.info("=== Computing centipawn loss on test set ===")
-        from datasets import load_from_disk
         import chess
+        from datasets import load_from_disk
 
         from qwen_chess_rl.inference import choose_uci_move
 
@@ -218,7 +245,26 @@ def main():
     parser.add_argument("--stockfish-games", type=int, default=20)
     parser.add_argument("--random-games", type=int, default=10)
     parser.add_argument("--stockfish-depth", type=int, default=8)
+    parser.add_argument(
+        "--stockfish-skill-level",
+        type=int,
+        default=None,
+        help="Stockfish 'Skill Level' (0-20, 0=weakest); default leaves Stockfish at full strength",
+    )
     parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument(
+        "--engine",
+        choices=["llm", "search", "hybrid"],
+        default="llm",
+        help="Policy: raw LLM, classical alpha-beta search alone, or LLM vetted by search",
+    )
+    parser.add_argument("--search-depth", type=int, default=4, help="Alpha-beta depth for search/hybrid")
+    parser.add_argument(
+        "--search-time-limit", type=float, default=1.0, help="Per-move time budget (s) for search/hybrid"
+    )
+    parser.add_argument(
+        "--hybrid-margin", type=float, default=50.0, help="Centipawn margin for hybrid engine"
+    )
     parser.add_argument("--compare", type=str, nargs="+", help="Additional checkpoints to compare")
     args = parser.parse_args()
 
@@ -232,7 +278,12 @@ def main():
         "stockfish_games": args.stockfish_games,
         "random_games": args.random_games,
         "stockfish_depth": args.stockfish_depth,
+        "stockfish_skill_level": args.stockfish_skill_level,
         "temperature": args.temperature,
+        "engine": args.engine,
+        "search_depth": args.search_depth,
+        "search_time_limit": args.search_time_limit,
+        "hybrid_margin": args.hybrid_margin,
     }
     if args.compare:
         all_checkpoints = [args.checkpoint] + list(args.compare)

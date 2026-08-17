@@ -11,12 +11,17 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <checkpoint_path> [options]"
     echo ""
     echo "Options:"
-    echo "  --output-dir DIR    Results directory (default: evaluation_results)"
-    echo "  --stockfish-games N Games vs Stockfish (default: 20)"
-    echo "  --random-games N    Games vs random (default: 10)"
-    echo "  --depth N           Stockfish depth (default: 8)"
-    echo "  --temperature T     Sampling temperature (default: 0.1)"
-    echo "  --compare CKPT ...  Additional checkpoints to compare"
+    echo "  --output-dir DIR         Results directory (default: evaluation_results)"
+    echo "  --stockfish-games N      Games vs Stockfish (default: 20)"
+    echo "  --random-games N         Games vs random (default: 10)"
+    echo "  --stockfish-depth N      Stockfish depth (default: 8)"
+    echo "  --stockfish-skill-level N  Stockfish Skill Level 0-20 (default: full strength)"
+    echo "  --temperature T          Sampling temperature (default: 0.1)"
+    echo "  --engine {llm,search,hybrid}  Policy: raw LLM, alpha-beta search, or LLM+search (default: llm)"
+    echo "  --search-depth N         Alpha-beta depth for search/hybrid (default: 4)"
+    echo "  --search-time-limit T    Per-move time budget (s) for search/hybrid (default: 1.0)"
+    echo "  --hybrid-margin CP       Centipawn margin for hybrid engine (default: 50)"
+    echo "  --compare CKPT ...       Additional checkpoints to compare"
     exit 1
 fi
 
