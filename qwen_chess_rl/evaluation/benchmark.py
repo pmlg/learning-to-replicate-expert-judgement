@@ -136,15 +136,19 @@ def run_full_benchmark(
     if test_path.exists():
         logger.info("=== Computing centipawn loss on test set ===")
         from datasets import load_from_disk
+        import chess
+
+        from qwen_chess_rl.inference import choose_uci_move
 
         test_ds = load_from_disk(str(test_path))
         positions = []
-        from qwen_chess_rl.data.dataset import extract_best_move
 
         for example in test_ds.select(range(min(1000, len(test_ds)))):
             fen = example.get("fen", "")
-            move = extract_best_move(example)
-            if fen and move:
+            if not fen:
+                continue
+            move = choose_uci_move(model, tokenizer, chess.Board(fen), temperature=temperature)
+            if move:
                 positions.append((fen, move))
 
         if positions:

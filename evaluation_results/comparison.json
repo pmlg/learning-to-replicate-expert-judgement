@@ -1,33 +1,4 @@
 {
-  "sft/final": {
-    "checkpoint": "checkpoints/sft/final/",
-    "temperature": 0.1,
-    "vs_stockfish": {
-      "wins": 0,
-      "draws": 0,
-      "losses": 20,
-      "win_rate": 0.0,
-      "draw_rate": 0.0,
-      "loss_rate": 1.0,
-      "avg_game_length": 44.7,
-      "total_games": 20,
-      "estimated_elo": 1600
-    },
-    "vs_random": {
-      "wins": 0,
-      "draws": 9,
-      "losses": 1,
-      "win_rate": 0.0,
-      "total_games": 10
-    },
-    "test_set_metrics": {
-      "avg_centipawn_loss": 259.513,
-      "median_centipawn_loss": 0.0,
-      "std_centipawn_loss": 1451.9157399212254,
-      "legal_move_pct": 1.0,
-      "sample_count": 1000
-    }
-  },
   "rl/final": {
     "checkpoint": "checkpoints/rl/final/",
     "temperature": 0.1,
@@ -38,15 +9,44 @@
       "win_rate": 0.0,
       "draw_rate": 0.0,
       "loss_rate": 1.0,
-      "avg_game_length": 47.5,
+      "avg_game_length": 51.3,
       "total_games": 20,
       "estimated_elo": 1600
     },
     "vs_random": {
+      "wins": 2,
+      "draws": 8,
+      "losses": 0,
+      "win_rate": 0.2,
+      "total_games": 10
+    },
+    "test_set_metrics": {
+      "avg_centipawn_loss": 259.513,
+      "median_centipawn_loss": 0.0,
+      "std_centipawn_loss": 1451.9157399212254,
+      "legal_move_pct": 1.0,
+      "sample_count": 1000
+    }
+  },
+  "sft/final": {
+    "checkpoint": "checkpoints/sft/final/",
+    "temperature": 0.1,
+    "vs_stockfish": {
       "wins": 0,
-      "draws": 6,
-      "losses": 4,
+      "draws": 0,
+      "losses": 20,
       "win_rate": 0.0,
+      "draw_rate": 0.0,
+      "loss_rate": 1.0,
+      "avg_game_length": 48.1,
+      "total_games": 20,
+      "estimated_elo": 1600
+    },
+    "vs_random": {
+      "wins": 2,
+      "draws": 8,
+      "losses": 0,
+      "win_rate": 0.2,
       "total_games": 10
     },
     "test_set_metrics": {

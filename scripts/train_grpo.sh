@@ -11,10 +11,10 @@ cd "$SCRIPT_DIR"
 CONFIG=""
 SFT_CHECKPOINT="checkpoints/sft/final"
 DATA_PATH=""
-OUTPUT_DIR="checkpoints/rl"
+OUTPUT_DIR="checkpoints/rl-luffy"
 STEPS=1000
 LR=5e-6
-SFT_ALPHA=""
+SFT_ALPHA="0.85"
 MAX_TRAIN_SAMPLES=""
 
 while [[ $# -gt 0 ]]; do

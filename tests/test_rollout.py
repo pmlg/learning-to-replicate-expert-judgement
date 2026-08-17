@@ -4,6 +4,7 @@ Covers:
 - compute_episode_reward: outcome/cutoff-eval -> scalar reward.
 - play_rollout: illegal first move, immediate mate, mid-game illegal move,
   capped-mode ply counting, full-game termination bound.
+- grpo_trajectory_loss: long trajectories must not blow up numerically.
 
 The play_rollout tests need a real Stockfish binary (the opponent's moves
 and cutoff evals go through it) — they're skipped if none is found.
@@ -26,7 +27,7 @@ from qwen_chess_rl.training.rl.reward import (
     _find_stockfish,
     compute_episode_reward,
 )
-from qwen_chess_rl.training.rl.rollout import play_rollout
+from qwen_chess_rl.training.rl.rollout import RolloutResult, play_rollout
 
 STOCKFISH_PATH = _find_stockfish()
 requires_stockfish = pytest.mark.skipif(
@@ -181,3 +182,64 @@ class TestPlayRolloutWithStockfish:
         )
         assert result.starting_eval is not None
         assert result.starting_eval < LOSING_EVAL_THRESHOLD
+
+
+class TestGrpoTrajectoryLossStability:
+    """Regression tests: a long trajectory must never blow up numerically.
+
+    Summing log-prob differences across a whole trajectory (rather than
+    averaging per token) let the importance ratio overflow to inf for
+    long full-game rollouts, producing NaN gradients that permanently
+    corrupted the model. See grpo_trajectory_loss's docstring.
+    """
+
+    @staticmethod
+    def _build_tiny_lora_model_and_tokenizer():
+        import torch
+        from peft import LoraConfig, get_peft_model
+        from transformers import AutoTokenizer, GPT2Config, GPT2LMHeadModel
+
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer.pad_token = tokenizer.eos_token
+        vocab_size = tokenizer.vocab_size + len(tokenizer.get_added_vocab())
+        config = GPT2Config(
+            vocab_size=vocab_size, n_positions=512, n_embd=32, n_layer=2, n_head=2,
+        )
+        lora_cfg = LoraConfig(r=4, lora_alpha=8, target_modules=["c_attn"], task_type="CAUSAL_LM")
+
+        model = get_peft_model(GPT2LMHeadModel(config), lora_cfg)
+        model.train()
+
+        ref_model = get_peft_model(GPT2LMHeadModel(config), lora_cfg)
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad = False
+
+        return model, ref_model, tokenizer
+
+    def test_long_trajectory_produces_a_finite_loss_and_gradients(self):
+        import torch
+
+        from qwen_chess_rl.data.dataset import format_fen_prompt
+        from qwen_chess_rl.training.rl.grpo import grpo_trajectory_loss
+
+        model, ref_model, tokenizer = self._build_tiny_lora_model_and_tokenizer()
+
+        # A 30-ply full-game-length trajectory — long enough that summing
+        # (rather than averaging) log-prob differences would overflow.
+        fen = chess.STARTING_FEN
+        traj = RolloutResult(
+            own_prompts=[format_fen_prompt(fen)] * 30,
+            own_moves=["e2e4"] * 30,
+            outcome="win",
+        )
+        cfg = GRPOConfig(max_length=256, clip_epsilon=0.2, beta=0.01)
+
+        loss = grpo_trajectory_loss(model, ref_model, tokenizer, [traj], [1.5], cfg)
+
+        assert loss is not None
+        assert torch.isfinite(loss)
+        loss.backward()
+        lora_grads = [p.grad for n, p in model.named_parameters() if "lora" in n and p.requires_grad]
+        assert all(g is not None for g in lora_grads)
+        assert all(torch.isfinite(g).all() for g in lora_grads)

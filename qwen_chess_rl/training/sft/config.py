@@ -45,13 +45,14 @@ class SFTConfig:
 
     # Model
     model_name: str = "Qwen/Qwen3-4B"
-    lora_r: int = 16
+    lora_r: int = 32
     lora_alpha: int = 32
-    lora_dropout: float = 0.05
+    lora_dropout: float = 0.1
     target_modules: list[str] = field(
         default_factory=lambda: [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
+            "embed_tokens", "lm_head",
         ]
     )
 
@@ -63,7 +64,7 @@ class SFTConfig:
 
     # Training
     output_dir: str = "checkpoints/sft"
-    batch_size: int = 4
+    batch_size: int = 6
     gradient_accumulation_steps: int = 8
     learning_rate: float = 2e-4
     lr_scheduler_type: str = "cosine"

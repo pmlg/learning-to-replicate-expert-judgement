@@ -8,15 +8,15 @@
     "win_rate": 0.0,
     "draw_rate": 0.0,
     "loss_rate": 1.0,
-    "avg_game_length": 50.9,
+    "avg_game_length": 48.1,
     "total_games": 20,
     "estimated_elo": 1600
   },
   "vs_random": {
-    "wins": 0,
-    "draws": 10,
+    "wins": 2,
+    "draws": 8,
     "losses": 0,
-    "win_rate": 0.0,
+    "win_rate": 0.2,
     "total_games": 10
   },
   "test_set_metrics": {

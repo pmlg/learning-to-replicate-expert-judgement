@@ -226,14 +226,26 @@ def grpo_trajectory_loss(
     Generalizes the original single-move GRPO loss to credit an entire
     rollout (see rollout.play_rollout): the trajectory-level advantage —
     derived from the game's actual outcome, not just one move's quality —
-    is applied to the summed log-prob of *every* move the policy made
-    during that trajectory. Each ply has its own prompt (the FEN changes
-    move to move), so unlike the single-move version this tokenizes each
-    ply itself rather than taking pre-tokenized tensors.
+    is applied to the policy's log-probs for *every* move it made during
+    that trajectory. Each ply has its own prompt (the FEN changes move to
+    move), so unlike the single-move version this tokenizes each ply
+    itself rather than taking pre-tokenized tensors.
+
+    Log-probs are averaged per token across the trajectory, not summed.
+    Full-game rollouts can span dozens of the policy's own moves (60-100+
+    tokens); summing log-prob differences over that many tokens made the
+    importance ratio (exp of the sum) overflow to inf for even mild
+    per-token drift, producing NaN gradients that permanently corrupt the
+    model. Averaging keeps the ratio's scale independent of trajectory
+    length, matching the single-move case when there's only one ply.
 
     The loss combines, per trajectory:
-    1. Clipped importance-sampling policy gradient on the summed log-probs.
+    1. Clipped importance-sampling policy gradient on the averaged log-probs.
     2. KL divergence penalty against the reference model.
+
+    Any trajectory whose ratio comes out non-finite (defense in depth,
+    beyond the averaging fix above) is skipped with a warning rather than
+    allowed to poison the whole batch's loss.
 
     Args:
         model: Current policy model.
@@ -252,8 +264,9 @@ def grpo_trajectory_loss(
     device = next(model.parameters()).device
 
     for traj, adv in zip(trajectories, advantages):
-        gen_log_probs: torch.Tensor | None = None
-        ref_gen_log_probs: torch.Tensor | None = None
+        gen_log_probs_sum: torch.Tensor | None = None
+        ref_log_probs_sum: torch.Tensor | None = None
+        token_count = 0
 
         for prompt, move_uci in zip(traj.own_prompts, traj.own_moves):
             move_id_list = tokenizer.encode(move_uci, add_special_tokens=False)
@@ -284,19 +297,27 @@ def grpo_trajectory_loss(
                     2, move_ids.unsqueeze(0).unsqueeze(-1)
                 ).squeeze(-1).sum()
 
-            gen_log_probs = (
-                ply_log_probs if gen_log_probs is None else gen_log_probs + ply_log_probs
+            gen_log_probs_sum = (
+                ply_log_probs if gen_log_probs_sum is None else gen_log_probs_sum + ply_log_probs
             )
-            ref_gen_log_probs = (
-                ply_ref_log_probs if ref_gen_log_probs is None
-                else ref_gen_log_probs + ply_ref_log_probs
+            ref_log_probs_sum = (
+                ply_ref_log_probs if ref_log_probs_sum is None
+                else ref_log_probs_sum + ply_ref_log_probs
             )
+            token_count += len(move_ids)
 
-        if gen_log_probs is None:
+        if gen_log_probs_sum is None or token_count == 0:
             continue
 
-        # Importance ratio, over the WHOLE trajectory's summed log-probs
+        # Average per token, not summed — keeps the ratio's scale
+        # independent of how many plies the trajectory has (see docstring).
+        gen_log_probs = gen_log_probs_sum / token_count
+        ref_gen_log_probs = ref_log_probs_sum / token_count
+
         ratio = torch.exp(gen_log_probs - ref_gen_log_probs)
+        if not torch.isfinite(ratio):
+            logger.warning("Non-finite importance ratio for a trajectory; skipping it.")
+            continue
         adv_t = torch.as_tensor(adv, device=ratio.device, dtype=ratio.dtype)
 
         # Clipped surrogate objective
@@ -308,6 +329,9 @@ def grpo_trajectory_loss(
         kl_penalty = cfg.beta * kl_div
 
         sample_loss = policy_loss + kl_penalty
+        if not torch.isfinite(sample_loss):
+            logger.warning("Non-finite loss for a trajectory; skipping it.")
+            continue
         total_loss = sample_loss if total_loss is None else total_loss + sample_loss
         num_samples += 1
 
@@ -506,6 +530,18 @@ def train(cfg: GRPOConfig):
                 logger.warning(
                     "Step %s: no differentiable GRPO loss (empty generations); skipping update",
                     global_step,
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
+            if not torch.isfinite(loss):
+                # Defense in depth: per-trajectory non-finite ratios/losses are
+                # already skipped inside grpo_trajectory_loss, but guard the
+                # final combined loss too (e.g. after LUFFY blending) — a NaN
+                # update here would permanently corrupt the model's weights.
+                logger.warning(
+                    "Step %s: non-finite loss (%s); skipping update",
+                    global_step, loss.item(),
                 )
                 optimizer.zero_grad(set_to_none=True)
                 continue
