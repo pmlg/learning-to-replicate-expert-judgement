@@ -65,6 +65,24 @@ class GRPOConfig:
             during rollouts. Deliberately shallow — a full-strength
             opponent would rarely lose to a still-learning policy, starving
             training of win signal.
+        rollout_vet_enabled: Whether a shallow classical search vets the
+            policy's own moves during a rollout (see
+            :func:`qwen_chess_rl.training.rl.rollout._vet_move`), replacing
+            a legal-but-losing move with the search's own choice. Applies
+            only to moves generated *during* the rollout — never the seed
+            first move, which must stay pure-LLM so GRPO's group-relative
+            advantage still has genuine diversity to compare. Cleans up
+            trajectories so the win/loss reward reflects sound play rather
+            than mid-game blunders, and when the search's move is kept,
+            the trajectory's reward directly reinforces the model
+            producing it — a soft, reward-weighted form of imitation.
+        rollout_vet_depth: Alpha-beta depth for the vetting search.
+        rollout_vet_time_limit: Per-move wall-clock budget (seconds) for
+            the vetting search. Kept shallow/short since it runs on every
+            one of the policy's own plies across every rollout.
+        rollout_vet_margin: Centipawn margin within which the policy's own
+            move is kept over the search's move (matches HybridPlayer's
+            default — see evaluation/stockfish_eval.py).
     """
 
     # Model
@@ -124,6 +142,14 @@ class GRPOConfig:
     rollout_full_game_ratio: float = 0.5  # fraction played to conclusion vs. capped
     rollout_max_plies: int = 10  # ply cap for the capped share
     opponent_depth: int = 3  # shallow Stockfish opponent during rollouts
+
+    # Rollout move vetting — a shallow classical search corrects legal-but-
+    # losing moves made *during* a rollout (never the seed first move; see
+    # docstring). See rollout.py's _vet_move.
+    rollout_vet_enabled: bool = True
+    rollout_vet_depth: int = 4
+    rollout_vet_time_limit: float = 0.3
+    rollout_vet_margin: float = 50.0  # centipawns
 
     # General
     seed: int = 42

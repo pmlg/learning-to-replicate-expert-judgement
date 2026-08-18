@@ -18,6 +18,7 @@ import chess
 import chess.engine
 
 from qwen_chess_rl.data.dataset import format_fen_prompt
+from qwen_chess_rl.engine.classical import choose_move, evaluate_move
 from qwen_chess_rl.training.rl.config import GRPOConfig
 from qwen_chess_rl.training.rl.reward import _find_stockfish
 
@@ -57,6 +58,36 @@ def _score_relative_to_policy(
         raw = float(relative.score() or 0)
     # `relative` is from the perspective of whoever is to move right now.
     return raw if board.turn == policy_color else -raw
+
+
+def _vet_move(
+    board: chess.Board,
+    llm_move: chess.Move,
+    cfg: GRPOConfig,
+) -> chess.Move:
+    """Let a shallow classical search veto a legal-but-losing LLM move.
+
+    Keeps the LLM's move only when a *searched* evaluation (not a bare
+    static one — see :func:`qwen_chess_rl.engine.classical.evaluate_move`)
+    puts it within ``rollout_vet_margin`` centipawns of the search's own
+    best move; otherwise substitutes the search's move so the trajectory's
+    reward can teach the policy to prefer it. Comparing static evals right
+    after each candidate (as HybridPlayer's margin check does) misses any
+    tactic that only shows up in the opponent's reply — e.g. a move that
+    hangs mate next ply looks fine until searched one ply deeper.
+    """
+    search_best = choose_move(
+        board, max_depth=cfg.rollout_vet_depth, time_limit=cfg.rollout_vet_time_limit,
+    )
+    if search_best is None or search_best == llm_move:
+        return llm_move
+
+    llm_score = evaluate_move(board, llm_move, cfg.rollout_vet_depth, cfg.rollout_vet_time_limit)
+    best_score = evaluate_move(board, search_best, cfg.rollout_vet_depth, cfg.rollout_vet_time_limit)
+
+    if best_score - llm_score <= cfg.rollout_vet_margin:
+        return llm_move
+    return search_best
 
 
 def _select_opponent_move(
@@ -188,6 +219,11 @@ def play_rollout(
                     # Illegal mid-game move forfeits the position.
                     result.outcome = "loss"
                     return result
+                if cfg.rollout_vet_enabled:
+                    vetted_move = _vet_move(board, next_move, cfg)
+                    if vetted_move != next_move:
+                        next_move = vetted_move
+                        candidates = next_move.uci()
                 result.own_prompts.append(format_fen_prompt(fen_now))
                 result.own_moves.append(candidates)
                 board.push(next_move)

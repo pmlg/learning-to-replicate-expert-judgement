@@ -3,7 +3,7 @@
 import chess
 import pytest
 
-from qwen_chess_rl.engine.classical import choose_move
+from qwen_chess_rl.engine.classical import choose_move, evaluate, evaluate_move
 
 
 class TestTimeoutSafety:
@@ -75,6 +75,47 @@ class TestAlwaysLegal:
         move = choose_move(board, max_depth=TEST_DEPTH, time_limit=TEST_TIME)
         assert move is not None
         assert move in board.legal_moves
+
+
+class TestEvaluateMove:
+    """evaluate_move must see tactics that only appear in the opponent's reply."""
+
+    # 1. e4 e5 2. Qh5 Nc6 3. Bc4, Black to move. a6 ignores the Qxf7# threat;
+    # a static eval of the position right after a6 has no way to know that —
+    # it only shows up once the reply is actually searched.
+    SCHOLARS_MATE_SETUP = "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3"
+
+    def test_static_eval_is_blind_to_the_mate_in_one_reply(self):
+        board = chess.Board(self.SCHOLARS_MATE_SETUP)
+        blunder = chess.Move.from_uci("a7a6")
+        sound = chess.Move.from_uci("g7g6")  # covers f7
+
+        def static_score(move):
+            board.push(move)
+            score = evaluate(board)
+            board.pop()
+            return score if board.turn == chess.WHITE else -score
+
+        # The static eval actually rates the losing move *higher* — proof
+        # a one-ply-deep comparison can't be used to catch this blunder.
+        assert static_score(blunder) > static_score(sound)
+
+    def test_searched_eval_catches_the_same_blunder(self):
+        board = chess.Board(self.SCHOLARS_MATE_SETUP)
+        blunder = chess.Move.from_uci("a7a6")
+        sound = chess.Move.from_uci("g7g6")
+
+        blunder_score = evaluate_move(board, blunder, max_depth=3, time_limit=1.0)
+        sound_score = evaluate_move(board, sound, max_depth=3, time_limit=1.0)
+
+        assert sound_score > blunder_score
+        assert board.fen() == self.SCHOLARS_MATE_SETUP  # board restored
+
+    def test_does_not_mutate_board(self):
+        board = chess.Board(self.SCHOLARS_MATE_SETUP)
+        fen_before = board.fen()
+        evaluate_move(board, chess.Move.from_uci("g7g6"), max_depth=2, time_limit=0.5)
+        assert board.fen() == fen_before
 
 
 class TestNoLegalMoves:

@@ -122,6 +122,31 @@ class TestPlayRolloutStructure:
         assert result.outcome == "loss"
 
 
+class TestVetMove:
+    """_vet_move must veto legal-but-losing moves using a searched eval."""
+
+    # 1. e4 e5 2. Qh5 Nc6 3. Bc4, Black to move — a6 ignores the Qxf7# threat.
+    SCHOLARS_MATE_SETUP = "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3"
+
+    def test_overrides_a_blunder_that_hangs_mate(self):
+        cfg = GRPOConfig(rollout_vet_depth=3, rollout_vet_time_limit=1.0)
+        board = chess.Board(self.SCHOLARS_MATE_SETUP)
+        blunder = chess.Move.from_uci("a7a6")
+
+        vetted = rollout_mod._vet_move(board, blunder, cfg)
+
+        assert vetted != blunder
+        assert vetted in board.legal_moves
+        assert board.fen() == self.SCHOLARS_MATE_SETUP  # board restored
+
+    def test_keeps_a_sound_move_unchanged(self):
+        cfg = GRPOConfig(rollout_vet_depth=3, rollout_vet_time_limit=1.0)
+        board = chess.Board()
+        fine_move = chess.Move.from_uci("g1f3")  # Nf3
+
+        assert rollout_mod._vet_move(board, fine_move, cfg) == fine_move
+
+
 @requires_stockfish
 class TestPlayRolloutWithStockfish:
     """Tests exercising the real Stockfish opponent and cutoff evaluation."""
@@ -182,6 +207,56 @@ class TestPlayRolloutWithStockfish:
         )
         assert result.starting_eval is not None
         assert result.starting_eval < LOSING_EVAL_THRESHOLD
+
+    # Black to move after 1. e4 — the model (Black) plays the rest of the
+    # Scholar's-mate line itself; the opponent's replies (Qh5, Bc4) are
+    # scripted too, so the exact position is reached deterministically
+    # without depending on what the real Stockfish opponent happens to play.
+    AFTER_1_E4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+
+    def _play_scholars_mate_setup(self, monkeypatch, own_third_move):
+        own_moves_script = iter(["b8c6", own_third_move])
+        monkeypatch.setattr(
+            rollout_mod, "_generate_one_move",
+            lambda model, tokenizer, fen, cfg: next(own_moves_script),
+        )
+        opponent_script = iter(["d1h5", "f1c4"])
+        monkeypatch.setattr(
+            rollout_mod, "_select_opponent_move",
+            lambda board, engine, depth: chess.Move.from_uci(next(opponent_script)),
+        )
+        cfg = GRPOConfig(
+            rollout_vet_enabled=True, rollout_vet_depth=3, rollout_vet_time_limit=1.0,
+        )
+        return play_rollout(
+            None, None, self.AFTER_1_E4_FEN, "e7e5", cfg,
+            stockfish_path=STOCKFISH_PATH, max_plies=5,
+        )
+
+    def test_vetting_substitutes_a_blundering_own_move(self, monkeypatch):
+        # 1. e4 e5 2. Qh5 Nc6 3. Bc4 a6?? — a6 ignores the Qxf7# threat;
+        # vetting should replace it before it's ever pushed to the board.
+        result = self._play_scholars_mate_setup(monkeypatch, own_third_move="a7a6")
+        assert result.own_moves == ["e7e5", "b8c6", result.own_moves[-1]]
+        assert result.own_moves[-1] != "a7a6"
+
+    def test_vetting_disabled_keeps_the_blunder(self, monkeypatch):
+        own_moves_script = iter(["b8c6", "a7a6"])
+        monkeypatch.setattr(
+            rollout_mod, "_generate_one_move",
+            lambda model, tokenizer, fen, cfg: next(own_moves_script),
+        )
+        opponent_script = iter(["d1h5", "f1c4"])
+        monkeypatch.setattr(
+            rollout_mod, "_select_opponent_move",
+            lambda board, engine, depth: chess.Move.from_uci(next(opponent_script)),
+        )
+        cfg = GRPOConfig(rollout_vet_enabled=False)
+        result = play_rollout(
+            None, None, self.AFTER_1_E4_FEN, "e7e5", cfg,
+            stockfish_path=STOCKFISH_PATH, max_plies=5,
+        )
+        assert result.own_moves[-1] == "a7a6"
 
 
 class TestGrpoTrajectoryLossStability:

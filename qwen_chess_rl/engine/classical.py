@@ -429,3 +429,49 @@ def choose_move(
         if ctx.deadline is not None and time.monotonic() >= ctx.deadline:
             break
     return best_move
+
+
+def evaluate_move(
+    board: chess.Board,
+    move: chess.Move,
+    max_depth: int = 4,
+    time_limit: float | None = 1.0,
+) -> int:
+    """Searched evaluation (centipawns, mover's perspective) of playing ``move``.
+
+    Unlike a bare :func:`evaluate` call on the resulting position, this
+    searches ``max_depth`` plies past the move itself (the opponent's best
+    reply and beyond), via the same iterative-deepening negamax used by
+    :func:`choose_move`. A static eval of the position right after a move
+    can't see a reply that wins material or forces mate next ply — it looks
+    fine until the opponent actually plays it — so comparing static evals is
+    blind to exactly the one-move-deep tactics a vetting check most needs to
+    catch.
+
+    Args:
+        board: Position before ``move``. Not mutated (the push is undone).
+        move: The candidate move to evaluate.
+        max_depth: Iterative-deepening depth searched *after* ``move``.
+        time_limit: Wall-clock budget in seconds, or None for no time bound.
+
+    Returns:
+        Centipawn score from the perspective of whoever is to move at
+        ``board`` (i.e. the side playing ``move``), positive is better for
+        them.
+    """
+    board.push(move)
+    try:
+        ctx = _SearchContext(time_limit, node_budget=None)
+        value = 0
+        for depth in range(1, max_depth + 1):
+            try:
+                value = _negamax(board, depth - 1, 0, -INF, INF, ctx)
+            except _Timeout:
+                break
+            if ctx.deadline is not None and time.monotonic() >= ctx.deadline:
+                break
+        # _negamax returns the value from the perspective of whoever is to
+        # move on `board` now, i.e. the opponent — negate back to the mover.
+        return -value
+    finally:
+        board.pop()
