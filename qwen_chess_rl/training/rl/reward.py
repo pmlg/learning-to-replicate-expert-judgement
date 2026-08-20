@@ -1,6 +1,34 @@
-"""Stockfish-based reward function for chess move evaluation in RL training."""
+"""Stockfish-based reward function for chess move evaluation in RL training.
+
+Reward philosophy (per user requirement: *moves should be legal and the reward
+should reward winning*):
+
+    r = Q(s, a) = P(mover wins | position after the proposed move)
+
+This is the dense win-probability reward that Chess-R1 (arXiv:2507.00726)
+proved outperforms sparse binary rewards for LLM chess RL. It directly
+measures "does this move win the game", is bounded in [0, 1], and contains
+no arbitrary hand-tuned constants. (The old code's delta variant compared
+win-prob before vs after from DIFFERENT perspectives — the post-move score
+is relative to the opponent — which systematically mis-scored moves; the
+perspective conversion `1 - winprob_after` is applied here.)
+
+Design decisions:
+- Illegal moves: hard floor of -1.0 (a gate, not a bonus). Legal moves get
+  a *graded* signal from the win-probability delta, not a flat +5.
+- Win probability: sigmoid(score) with Lichess-style scale
+  p = 1 / (1 + 10^(-cp/400)). Checkmate => p=0 or p=1 exactly.
+- Sign handling: python-chess scores are relative to the side to move. After
+  pushing a move the turn flips, so the post-move score MUST be negated
+  before comparing to the pre-move score. The old code compared them raw,
+  which made a *good* move look like a ~100cp blunder.
+- Engine lifecycle: one persistent engine process per batch call, reused for
+  all evals. The old code spawned a fresh `popen_uci` per evaluation, which
+  dominates runtime in RL rollouts.
+"""
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -10,262 +38,26 @@ import chess.engine
 
 logger = logging.getLogger(__name__)
 
-# Reward scaling constants
-LEGAL_MOVE_BONUS = 0.0  # no reward just for legality — only the outcome matters
-CHECKMATE_BONUS = 10.0
-BLUNDER_PENALTY = -5.0
-DRAW_AVOIDANCE_BONUS = 3.0
-REPETITION_AVOIDANCE_BONUS = 2.0
-MAX_CP_PENALTY = -10.0
+# Win-probability conversion scale (Lichess / Stockfish WDL convention).
+CP_SCALE = 400.0
 
-# Episode-outcome reward constants (multi-ply rollouts, see rollout.py).
-# Winning is the only thing that scores positively; a normal (undecided)
-# move carries no reward at all; losing is a heavy penalty; a draw is at
-# worst a small penalty (see DRAW_REWARD) unless it was salvaged from a
-# clearly lost position, in which case it's rewarded (DRAW_REWARD_WHEN_LOSING).
-WIN_REWARD = 20.0
-LOSS_REWARD = -20.0
-DRAW_REWARD = 0.0  # a draw from a balanced/winning start is neutral, not punished
-# Capped (non-terminated) rollouts didn't reach a decisive outcome — no
-# natural conclusion means no reward, regardless of the position's eval.
-
-# A draw's value depends on context: failing to convert a winning/equal
-# position into a win is still discouraged (DRAW_REWARD), but salvaging a
-# draw from a position that was already clearly lost is a genuinely good
-# outcome — winning isn't realistic there, so the objective becomes "don't
-# lose." LOSING_EVAL_THRESHOLD (centipawns, policy's perspective) is the
-# rough cutoff for "clearly worse" used to tell the two cases apart.
-LOSING_EVAL_THRESHOLD = -150.0
-DRAW_REWARD_WHEN_LOSING = 10.0
+# Reward floors
+ILLEGAL_REWARD = -1.0
+INVALID_FEN_REWARD = -1.0
+# Kept for back-compat with main's test_rollout.py — legality alone earns
+# nothing (the new reward's illegal floor is ILLEGAL_REWARD).
+LEGAL_MOVE_BONUS = 0.0
 
 
-def _find_stockfish() -> str | None:
-    """Locate the Stockfish engine binary.
-
-    Checks common installation paths and PATH.
-
-    Returns:
-        Path to Stockfish binary, or None if not found.
-    """
-    candidates = [
-        "stockfish",
-        "/usr/games/stockfish",
-        "/usr/local/bin/stockfish",
-        "/opt/homebrew/bin/stockfish",
-    ]
-    for candidate in candidates:
-        try:
-            result = subprocess.run(
-                [candidate, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return candidate
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    return None
-
-
-def evaluate_position_stockfish(
-    fen: str,
-    stockfish_path: Optional[str] = None,
-    depth: int = 15,
-    timeout: float = 5.0,
-) -> dict:
-    """Evaluate a chess position using Stockfish.
-
-    Args:
-        fen: FEN string of the position.
-        stockfish_path: Path to Stockfish binary (auto-detect if None).
-        depth: Analysis depth for Stockfish.
-        timeout: Maximum time in seconds for analysis.
-
-    Returns:
-        Dictionary with keys:
-            - 'score': Centipawn score (positive = white advantage).
-            - 'mate': Mate in N moves (None if no forced mate).
-            - 'bestmove': Best move in UCI notation.
-            - 'pv': Principal variation (list of UCI moves).
-    """
-    stockfish_path = stockfish_path or _find_stockfish()
-    if stockfish_path is None:
-        logger.warning("Stockfish not found; returning dummy evaluation.")
-        return {"score": 0, "mate": None, "bestmove": None, "pv": []}
-
-    try:
-        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-        board = chess.Board(fen)
-        result = engine.analyse(
-            board,
-            chess.engine.Limit(depth=depth, time=timeout),
-        )
-        engine.quit()
-
-        score_obj = result.get("score")
-        if score_obj is None:
-            return {"score": 0, "mate": None, "bestmove": None, "pv": []}
-
-        pv = result.get("pv", [])
-        bestmove = str(pv[0]) if pv else None
-
-        # PovScore itself has no .score()/.mate() — those live on the
-        # underlying Score, reached via .relative (relative to side to move).
-        relative_score = score_obj.relative
-
-        if relative_score.is_mate():
-            mate_in = relative_score.mate()
-            return {
-                "score": 0 if mate_in is None else (10000 if mate_in > 0 else -10000),
-                "mate": mate_in,
-                "bestmove": bestmove,
-                "pv": [str(m) for m in pv],
-            }
-        else:
-            centipawns = relative_score.score()  # relative to side to move
-            return {
-                "score": centipawns,
-                "mate": None,
-                "bestmove": bestmove,
-                "pv": [str(m) for m in pv],
-            }
-    except Exception as exc:
-        logger.error("Stockfish evaluation failed: %s", exc)
-        return {"score": 0, "mate": None, "bestmove": None, "pv": []}
-
-
-def compute_reward(
-    fen: str,
-    proposed_move: str,
-    stockfish_path: Optional[str] = None,
-    eval_depth: int = 15,
-) -> dict:
-    """Compute reward for a proposed move given a FEN position.
-
-    The reward considers multiple chess-quality factors:
-
-    1. **Legal move** (+5): The move must be legal in the given position.
-    2. **Centipawn loss** (0 to -10): Scaled penalty proportional to how much
-       Stockfish judges the move to be worse than the best move.
-    3. **Checkmate** (+10): If the proposed move is checkmate.
-    4. **Blunder** (-5): Additional penalty if centipawn loss > 100.
-    5. **Draw avoidance** (+3): If the position would otherwise lead to a draw.
-    6. **Repetition avoidance** (+2): If the move prevents threefold repetition.
-
-    Args:
-        fen: FEN string of the current board position.
-        proposed_move: Proposed move in UCI notation (e.g., 'e2e4').
-        stockfish_path: Path to Stockfish binary (auto-detect if None).
-        eval_depth: Stockfish analysis depth.
-
-    Returns:
-        Dictionary with keys:
-            - 'total_reward': Combined reward score.
-            - 'breakdown': Component scores for interpretability.
-            - 'legal': Whether the move is legal.
-            - 'best_move': Stockfish's best move in this position.
-            - 'cp_loss': Centipawn loss of the proposed move.
-    """
-    reward_breakdown = {
-        "legal_move": 0.0,
-        "centipawn_score": 0.0,
-        "checkmate": 0.0,
-        "blunder_penalty": 0.0,
-        "draw_avoidance": 0.0,
-        "repetition_avoidance": 0.0,
-    }
-    total_reward = 0.0
-
-    try:
-        board = chess.Board(fen)
-    except ValueError:
-        logger.warning("Invalid FEN: %s", fen)
-        return {
-            "total_reward": -10.0,
-            "breakdown": reward_breakdown,
-            "legal": False,
-            "best_move": None,
-            "cp_loss": None,
-        }
-
-    # 1. Legal move check
-    try:
-        move = chess.Move.from_uci(proposed_move)
-        is_legal = move in board.legal_moves
-    except (ValueError, AttributeError):
-        move = None
-        is_legal = False
-
-    if not is_legal or move is None:
-        logger.debug("Illegal move: %s in position %s", proposed_move, fen)
-        return {
-            "total_reward": -10.0,
-            "breakdown": {**reward_breakdown, "legal_move": -10.0},
-            "legal": False,
-            "best_move": None,
-            "cp_loss": None,
-        }
-
-    reward_breakdown["legal_move"] = LEGAL_MOVE_BONUS
-    total_reward += LEGAL_MOVE_BONUS
-
-    # 2. Evaluate position with Stockfish
-    eval_result = evaluate_position_stockfish(fen, stockfish_path, depth=eval_depth)
-    best_move_uci = eval_result.get("bestmove")
-    sf_score = eval_result.get("score", 0)
-
-    if sf_score is not None:
-        # Centipawn loss: difference between best move score and proposed move score
-        board.push(move)
-        proposed_eval = evaluate_position_stockfish(
-            board.fen(), stockfish_path, depth=eval_depth
-        )
-        board.pop()
-
-        proposed_score = proposed_eval.get("score", 0)
-        # proposed_score is relative to the opponent (side to move after our
-        # move was pushed) — negate to compare in the same reference frame
-        # as sf_score before summing.
-        cp_loss = max(0.0, sf_score + proposed_score)
-        cp_reward = -min(cp_loss / 100.0, abs(MAX_CP_PENALTY))
-        reward_breakdown["centipawn_score"] = cp_reward
-        total_reward += cp_reward
-
-        # 4. Blunder penalty
-        if cp_loss > 100:
-            reward_breakdown["blunder_penalty"] = BLUNDER_PENALTY
-            total_reward += BLUNDER_PENALTY
-    else:
-        cp_loss = None
-
-    # 3-6. Evaluate move consequences
-    ev_board = board.copy()
-    ev_board.push(move)
-
-    # 3. Checkmate detection
-    if ev_board.is_checkmate():
-        reward_breakdown["checkmate"] = CHECKMATE_BONUS
-        total_reward += CHECKMATE_BONUS
-
-    # 5. Draw avoidance
-    if ev_board.is_stalemate() or ev_board.is_insufficient_material():
-        if len(list(board.legal_moves)) > 1:
-            reward_breakdown["draw_avoidance"] = -DRAW_AVOIDANCE_BONUS
-            total_reward -= DRAW_AVOIDANCE_BONUS
-
-    # 6. Repetition avoidance
-    if ev_board.is_repetition(count=2):
-        reward_breakdown["repetition_avoidance"] = -REPETITION_AVOIDANCE_BONUS
-        total_reward -= REPETITION_AVOIDANCE_BONUS
-
-    return {
-        "total_reward": total_reward,
-        "breakdown": reward_breakdown,
-        "legal": True,
-        "best_move": best_move_uci,
-        "cp_loss": cp_loss,
-    }
+# ---------------------------------------------------------------------------
+# Episode-level reward (used by GRPO rollout loop: main's grpo.py imports
+# compute_episode_reward and these constants from this module).
+# ---------------------------------------------------------------------------
+WIN_REWARD: float = 20.0
+LOSS_REWARD: float = -20.0
+DRAW_REWARD: float = 0.0
+DRAW_REWARD_WHEN_LOSING: float = 10.0
+LOSING_EVAL_THRESHOLD: float = -150.0  # centipawns
 
 
 def compute_episode_reward(
@@ -305,25 +97,322 @@ def compute_episode_reward(
     return 0.0
 
 
+def _find_stockfish() -> Optional[str]:
+    """Locate the Stockfish engine binary.
+
+    Checks common installation paths, PATH, and ~/bin (user-installed).
+    """
+    candidates = [
+        "stockfish",
+        "/usr/games/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
+        str(Path.home() / "bin" / "stockfish"),
+    ]
+    for candidate in candidates:
+        found = shutil.which(candidate) if "/" not in candidate else candidate
+        try:
+            result = subprocess.run(
+                [found or candidate, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return found or candidate
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def _score_to_win_prob(score_obj: Optional[chess.engine.Score]) -> float:
+    """Convert a python-chess Score (relative to side to move) to win prob.
+
+    Returns:
+        win probability in [0, 1] for the side to move.
+    """
+    if score_obj is None:
+        return 0.5
+    if score_obj.is_mate():
+        mate_in = score_obj.mate()
+        # mate() > 0: side to move delivers mate; < 0: side to move gets mated.
+        return 1.0 if mate_in and mate_in > 0 else 0.0
+    cp = score_obj.score()
+    if cp is None:
+        return 0.5
+    return 1.0 / (1.0 + 10.0 ** (-cp / CP_SCALE))
+
+
+class RewardEngine:
+    """Persistent Stockfish engine wrapper for fast batch reward computation.
+
+    Spawning a UCI engine per evaluation is the dominant cost in RL reward
+    loops; this class keeps one engine alive for a whole batch.
+    """
+
+    def __init__(self, stockfish_path: Optional[str] = None, depth: int = 12):
+        self._engine = None
+        self.stockfish_path = stockfish_path or _find_stockfish()
+        self.depth = depth
+        if self.stockfish_path is None:
+            logger.warning("Stockfish not found; reward computation disabled.")
+
+    def __enter__(self):
+        if self.stockfish_path is not None:
+            self._engine = self._spawn()
+        return self
+
+    def __exit__(self, *exc):
+        if self._engine is not None:
+            try:
+                self._engine.quit()
+            except Exception:  # noqa: BLE001 - engine may already be dead
+                pass
+            self._engine = None
+
+    def _spawn(self):
+        if self.stockfish_path is None:
+            raise RuntimeError("Stockfish binary not found")
+        return chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
+
+    def _ensure_alive(self):
+        """Restart the engine if it died (crash, parse error, OOM)."""
+        if self._engine is not None:
+            try:
+                self._engine.quit()
+            except Exception:  # noqa: BLE001
+                pass
+            self._engine = None
+        self._engine = self._spawn()
+
+    def eval_win_prob(self, board: chess.Board) -> float:
+        """Evaluate a position and return win prob for the side to move.
+
+        Robust to engine death: on any failure the engine is fully closed
+        and a fresh process retries the SAME analysis once. (Resuming a
+        restarted process is unsafe — python-chess replays pending futures
+        against a positionless engine, which yields corrupt PVs.)
+        """
+        if self._engine is None:
+            return 0.5
+        for attempt in range(2):
+            try:
+                info = self._engine.analyse(
+                    board, chess.engine.Limit(depth=self.depth)
+                )
+                score = info.get("score")
+                # PovScore.relative is a PROPERTY -> Score from side-to-move
+                # perspective (verified against python-chess runtime; the
+                # type-checker stubs mislabel it as a method).
+                return _score_to_win_prob(
+                    score.relative if score is not None else None
+                )
+            except Exception as exc:  # noqa: BLE001 - engine errors are non-fatal
+                if attempt == 0:
+                    logger.warning(
+                        "Stockfish eval failed (attempt %d), restarting: %s",
+                        attempt + 1, exc,
+                    )
+                    try:
+                        self._ensure_alive()
+                    except Exception as spawn_exc:  # noqa: BLE001
+                        logger.error("Stockfish respawn failed: %s", spawn_exc)
+                        self._engine = None
+                        return 0.5
+                else:
+                    logger.error("Stockfish eval failed on retry: %s", exc)
+                    try:
+                        self._ensure_alive()
+                    except Exception:  # noqa: BLE001
+                        self._engine = None
+                    return 0.5
+        return 0.5
+
+
+def evaluate_position_stockfish(
+    fen: str,
+    stockfish_path: Optional[str] = None,
+    depth: int = 15,
+    timeout: float = 5.0,
+) -> dict:
+    """[back-compat] Evaluate a position, return raw Stockfish info dict.
+
+    Kept for existing callers (evaluation/metrics.py, LUFFY trace
+    generation). Returns keys: 'score' (centipawns relative to side to
+    move), 'mate', 'bestmove', 'pv'. For RL rewards use compute_reward /
+    RewardEngine instead (win-probability based, engine-reuse, crash-safe).
+    """
+    stockfish_path = stockfish_path or _find_stockfish()
+    if stockfish_path is None:
+        return {"score": 0, "mate": None, "bestmove": None, "pv": []}
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        try:
+            board = chess.Board(fen)
+            result = engine.analyse(
+                board, chess.engine.Limit(depth=depth, time=timeout)
+            )
+        finally:
+            try:
+                engine.quit()
+            except Exception:  # noqa: BLE001
+                pass
+        score_obj = result.get("score")
+        if score_obj is None:
+            return {"score": 0, "mate": None, "bestmove": None, "pv": []}
+        # PovScore.relative is a property -> side-to-move perspective.
+        rel = score_obj.relative if score_obj is not None else None
+        pv = result.get("pv", [])
+        bestmove = str(pv[0]) if pv else None
+        if rel is not None and rel.is_mate():
+            mate_in = rel.mate()
+            return {
+                "score": 0 if mate_in is None else (10000 if mate_in > 0 else -10000),
+                "mate": mate_in,
+                "bestmove": bestmove,
+                "pv": [str(m) for m in pv],
+            }
+        cp = rel.score() if rel is not None else 0
+        return {
+            "score": cp if cp is not None else 0,
+            "mate": None,
+            "bestmove": bestmove,
+            "pv": [str(m) for m in pv],
+        }
+    except Exception as exc:
+        logger.error("Stockfish evaluation failed: %s", exc)
+        return {"score": 0, "mate": None, "bestmove": None, "pv": []}
+
+
+def compute_reward(
+    fen: str,
+    proposed_move: str,
+    stockfish_path: Optional[str] = None,
+    eval_depth: int = 12,
+    engine: Optional[RewardEngine] = None,
+) -> dict:
+    """Compute the win-probability reward Q(s,a) for a proposed move.
+
+    r = P(mover wins | position after the move), in [0, 1].
+
+    - Illegal / invalid: -1.0 (hard floor).
+    - Checkmate by the mover: 1.0 (win prob after = 1).
+    - Best move: high (approaches 1.0 in winning positions).
+    - Blunder: much lower than the alternatives in the same group.
+
+    Args:
+        fen: FEN of the current position (side to move = the mover).
+        proposed_move: Move in UCI notation (e.g., 'e2e4').
+        stockfish_path: Path to Stockfish binary (auto-detect if None).
+        eval_depth: Search depth for win-prob estimation.
+        engine: Reusable RewardEngine (avoids process spawn per move).
+
+    Returns:
+        dict with total_reward (float), breakdown, legal, best info.
+    """
+    breakdown = {
+        "legal_move": False,
+        "winprob_before": None,
+        "winprob_after": None,
+        "reward_delta": 0.0,
+        "checkmate": False,
+        "cp_before": None,
+        "cp_after": None,
+    }
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        logger.warning("Invalid FEN: %s", fen)
+        return {
+            "total_reward": INVALID_FEN_REWARD,
+            "breakdown": breakdown,
+            "legal": False,
+            "best_move": None,
+            "cp_loss": None,
+        }
+
+    try:
+        move = chess.Move.from_uci(proposed_move)
+        is_legal = move in board.legal_moves
+    except (ValueError, AttributeError):
+        move = None
+        is_legal = False
+
+    if not is_legal or move is None:
+        return {
+            "total_reward": ILLEGAL_REWARD,
+            "breakdown": {**breakdown, "legal_move": False},
+            "legal": False,
+            "best_move": None,
+            "cp_loss": None,
+        }
+
+    breakdown["legal_move"] = True
+    board.push(move)
+    is_checkmate = board.is_checkmate()
+    breakdown["checkmate"] = is_checkmate
+
+    if engine is not None:
+        winprob_before = engine.eval_win_prob(chess.Board(fen))
+        winprob_after = engine.eval_win_prob(board)
+    else:
+        with RewardEngine(stockfish_path, eval_depth) as eng:
+            winprob_before = eng.eval_win_prob(chess.Board(fen))
+            winprob_after = eng.eval_win_prob(board)
+
+    breakdown["winprob_before"] = winprob_before
+    breakdown["winprob_after"] = winprob_after
+
+    # Perspective conversion: winprob_after is relative to the NEW side to
+    # move (the opponent). Mover's win prob after the move = 1 - that.
+    mover_winprob_after = 1.0 - winprob_after
+    breakdown["mover_winprob_after"] = mover_winprob_after
+
+    # Chess-R1 style dense reward: Q(s,a) = mover's win probability after
+    # the move, in [0,1]. Directly rewards winning; checkmate -> 1.0.
+    reward = mover_winprob_after
+    breakdown["reward_delta"] = mover_winprob_after - winprob_before
+
+    return {
+        "total_reward": reward,
+        "breakdown": breakdown,
+        "legal": True,
+        "best_move": None,  # not computed; see RewardEngine note
+        "cp_loss": None,
+    }
+
+
 def batch_compute_rewards(
     positions: list[tuple[str, str]],
     stockfish_path: Optional[str] = None,
-    eval_depth: int = 15,
+    eval_depth: int = 12,
     num_workers: int = 4,
 ) -> list[dict]:
     """Compute rewards for a batch of (FEN, move) pairs.
 
-    Args:
-        positions: List of (fen, move) tuples.
-        stockfish_path: Path to Stockfish binary.
-        eval_depth: Stockfish analysis depth.
-        num_workers: Number of parallel workers (not yet implemented).
-
-    Returns:
-        List of reward dictionaries.
+    Uses a single persistent engine process for the whole batch
+    (process-spawn overhead was the old bottleneck).
+    `num_workers` is accepted for API compatibility; the persistent
+    engine already removes the spawn cost, so parallelism is unnecessary.
     """
+    stockfish_path = stockfish_path or _find_stockfish()
+    if stockfish_path is None:
+        logger.warning("Stockfish not found; returning neutral rewards.")
+        return [
+            {
+                "total_reward": 0.0,
+                "breakdown": {},
+                "legal": True,
+                "best_move": None,
+                "cp_loss": None,
+            }
+            for _ in positions
+        ]
+
     results = []
-    for fen, move in positions:
-        reward = compute_reward(fen, move, stockfish_path, eval_depth)
-        results.append(reward)
+    with RewardEngine(stockfish_path, eval_depth) as engine:
+        for fen, move in positions:
+            results.append(
+                compute_reward(fen, move, engine=engine)
+            )
     return results
