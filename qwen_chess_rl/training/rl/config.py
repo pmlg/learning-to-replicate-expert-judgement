@@ -116,7 +116,7 @@ class GRPOConfig:
     top_p: float = 0.9
 
     # Reward / evaluation
-    eval_depth: int = 12
+    eval_depth: int = 15
 
     # Training loop
     num_training_steps: int = 500_000
