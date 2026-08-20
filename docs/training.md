@@ -63,7 +63,9 @@ Stockfish clone.
 | `use_luffy` | `False` | Master toggle for LUFFY augmentation |
 | `trace_ratio` | `0.3` | Fraction of off-policy traces per batch |
 | `is_clip` | `0.2` | IS weight clipping range |
-| `sft_alpha` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `total = (1 - sft_alpha) * onpolicy + sft_alpha * offpolicy` |
+| `luffy_alpha` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `total = (1 - luffy_alpha) * onpolicy + luffy_alpha * offpolicy` |
+| `luffy_alpha_final` | `0.85` | Target value luffy_alpha anneals to over `luffy_alpha_anneal_steps` (bootstrap on traces early, hand more weight to on-policy GRPO later) |
+| `luffy_alpha_anneal_steps` | `0` | Steps over which luffy_alpha linearly anneals to `luffy_alpha_final`; `0` disables annealing |
 | `trace_engine_depth` | `18` | Stockfish depth for trace generation |
 | `confidence_temp` | `1.0` | Temperature for anti-imitation weighting |
 | `entropy_beta` | `0.01` | Entropy bonus (encourages exploration) |
@@ -82,7 +84,7 @@ cat > configs/luffy_grpo.yaml << 'EOF'
 use_luffy: true
 trace_ratio: 0.3
 is_clip: 0.2
-sft_alpha: 0.85
+luffy_alpha: 0.85
 trace_path: data/traces.jsonl
 num_training_steps: 1000
 EOF

@@ -38,10 +38,25 @@ class GRPOConfig:
         use_luffy: Enable LUFFY off-policy guidance augmentation.
         trace_ratio: Fraction of off-policy traces in each sampled batch.
         is_clip: IS weight clipping range for off-policy corrections.
-        sft_alpha: Ratio of off-policy (LUFFY) to on-policy (GRPO) loss in
-            the combined update: total = (1 - sft_alpha) * onpolicy +
-            sft_alpha * offpolicy. 0 = pure on-policy GRPO, 1 = pure
-            off-policy imitation of the LUFFY traces.
+        luffy_alpha: Ratio of off-policy (LUFFY) to on-policy (GRPO) loss in
+            the combined update: total = (1 - luffy_alpha) * onpolicy +
+            luffy_alpha * offpolicy. 0 = pure on-policy GRPO, 1 = pure
+            off-policy imitation of the LUFFY traces. Used as the starting
+            value of the anneal (see luffy_alpha_final / luffy_alpha_anneal_steps).
+        luffy_alpha_final: Value luffy_alpha linearly anneals *to* over
+            luffy_alpha_anneal_steps. Rationale: early training benefits from
+            leaning on Stockfish traces (luffy_alpha high) to quickly learn
+            legal, sound moves; but staying at a high imitation weight caps
+            the policy at roughly the trace engine's own strength. Annealing
+            down hands more weight to on-policy GRPO once the policy is
+            competent, letting reward-driven search exceed the trace
+            engine's ceiling instead of just cloning it — the same
+            bootstrap-then-refine curriculum used to push win rate toward
+            100% rather than plateauing at "as good as the traces."
+        luffy_alpha_anneal_steps: Number of steps over which luffy_alpha
+            linearly interpolates from luffy_alpha to luffy_alpha_final.
+            0 (default) disables annealing — luffy_alpha stays constant,
+            matching the original static-blend behaviour.
         trace_engine_depth: Stockfish depth for trace generation.
         confidence_temp: Temperature for confidence-based anti-imitation weighting.
         entropy_beta: Entropy bonus coefficient (encourages exploration).
@@ -129,7 +144,9 @@ class GRPOConfig:
     use_luffy: bool = True  # Master toggle for LUFFY augmentation
     trace_ratio: float = 0.3  # Fraction of off-policy traces in each batch
     is_clip: float = 0.2  # IS weight clipping range
-    sft_alpha: float = 0.85  # Ratio of off-policy (LUFFY) to on-policy (GRPO) loss
+    luffy_alpha: float = 0.85  # Ratio of off-policy (LUFFY) to on-policy (GRPO) loss
+    luffy_alpha_final: float = 0.85  # Annealed target for luffy_alpha (see docstring)
+    luffy_alpha_anneal_steps: int = 0  # 0 = constant luffy_alpha (no anneal)
     trace_engine_depth: int = 18  # Stockfish depth for trace generation
     confidence_temp: float = 1.0  # Temperature for confidence-based weighting
     entropy_beta: float = 0.01  # Entropy bonus coefficient (anti-imitation)

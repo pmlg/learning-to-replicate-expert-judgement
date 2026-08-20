@@ -1,23 +1,30 @@
 {
-  "checkpoint": "classical-search-engine",
+  "checkpoint": "checkpoints/rl/final/",
   "temperature": 0.1,
-  "engine": "search",
+  "engine": "llm",
   "vs_stockfish": {
-    "wins": 19,
+    "wins": 0,
     "draws": 0,
-    "losses": 1,
-    "win_rate": 0.95,
+    "losses": 20,
+    "win_rate": 0.0,
     "draw_rate": 0.0,
-    "loss_rate": 0.05,
-    "avg_game_length": 77.15,
+    "loss_rate": 1.0,
+    "avg_game_length": 35.2,
     "total_games": 20,
-    "estimated_elo": 2511.501440381132
+    "estimated_elo": 1600
   },
   "vs_random": {
-    "wins": 10,
-    "draws": 0,
-    "losses": 0,
-    "win_rate": 1.0,
+    "wins": 0,
+    "draws": 8,
+    "losses": 2,
+    "win_rate": 0.0,
     "total_games": 10
+  },
+  "test_set_metrics": {
+    "avg_centipawn_loss": 1006.683,
+    "median_centipawn_loss": 103.5,
+    "std_centipawn_loss": 2742.066150644619,
+    "legal_move_pct": 1.0,
+    "sample_count": 1000
   }
 }

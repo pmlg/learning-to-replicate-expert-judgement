@@ -16,7 +16,8 @@ import random
 import pytest
 import torch
 
-from qwen_chess_rl.training.rl.grpo import combine_onpolicy_offpolicy_loss
+from qwen_chess_rl.training.rl.config import GRPOConfig
+from qwen_chess_rl.training.rl.grpo import combine_onpolicy_offpolicy_loss, compute_luffy_alpha
 from qwen_chess_rl.training.rl.luffy.buffer import ExperienceBuffer
 from qwen_chess_rl.training.rl.luffy.is_weights import (
     compute_is_weights,
@@ -110,6 +111,23 @@ class TestExperienceBuffer:
         assert sample["on_policy_count"] + sample["off_policy_count"] <= 8
         assert sample["on_policy_count"] == 4  # 50% of 8
         assert sample["off_policy_count"] == 4
+
+    def test_default_config_batch_size_yields_off_policy_samples(self):
+        # Regression test: luffy_offpolicy_loss used to pre-multiply
+        # cfg.batch_size by cfg.trace_ratio before calling buffer.sample(),
+        # which internally re-applies trace_ratio — at the GRPOConfig
+        # defaults (batch_size=8, trace_ratio=0.3) that double application
+        # floored to int(int(8*0.3)*0.3) = 0, silently disabling the LUFFY
+        # off-policy loss at the default config. The correct call passes
+        # cfg.batch_size straight through.
+        cfg = GRPOConfig()
+        buf = ExperienceBuffer(capacity=100, trace_ratio=cfg.trace_ratio, seed=cfg.seed)
+        for i in range(20):
+            buf.add_off_policy(
+                OffPolicyTrace(fen=f"fen_off_{i}", action="e2e4", reward=float(i))
+            )
+        sample = buf.sample(batch_size=cfg.batch_size)
+        assert sample["off_policy_count"] > 0
 
     def test_trace_ratio_zero(self):
         buf = ExperienceBuffer(capacity=100, trace_ratio=0.0, seed=42)
@@ -271,35 +289,61 @@ class TestLuffyLoss:
 
 
 class TestCombineOnpolicyOffpolicyLoss:
-    """Test the sft_alpha blend between on-policy GRPO and off-policy LUFFY loss."""
+    """Test the luffy_alpha blend between on-policy GRPO and off-policy LUFFY loss."""
 
     def test_alpha_zero_is_pure_onpolicy(self):
         onpolicy = torch.tensor(4.0)
         offpolicy = torch.tensor(10.0)
-        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=0.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, luffy_alpha=0.0)
         assert combined.item() == pytest.approx(4.0)
 
     def test_alpha_one_is_pure_offpolicy(self):
         onpolicy = torch.tensor(4.0)
         offpolicy = torch.tensor(10.0)
-        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=1.0)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, luffy_alpha=1.0)
         assert combined.item() == pytest.approx(10.0)
 
     def test_alpha_blends_proportionally(self):
         onpolicy = torch.tensor(4.0)
         offpolicy = torch.tensor(10.0)
-        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, sft_alpha=0.5)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, offpolicy, luffy_alpha=0.5)
         assert combined.item() == pytest.approx(0.5 * 4.0 + 0.5 * 10.0)
 
     def test_none_onpolicy_falls_back_to_scaled_offpolicy(self):
         offpolicy = torch.tensor(10.0)
-        combined = combine_onpolicy_offpolicy_loss(None, offpolicy, sft_alpha=0.5)
+        combined = combine_onpolicy_offpolicy_loss(None, offpolicy, luffy_alpha=0.5)
         assert combined.item() == pytest.approx(5.0)
 
     def test_none_offpolicy_falls_back_to_scaled_onpolicy(self):
         onpolicy = torch.tensor(4.0)
-        combined = combine_onpolicy_offpolicy_loss(onpolicy, None, sft_alpha=0.5)
+        combined = combine_onpolicy_offpolicy_loss(onpolicy, None, luffy_alpha=0.5)
         assert combined.item() == pytest.approx(2.0)
 
     def test_both_none_returns_none(self):
-        assert combine_onpolicy_offpolicy_loss(None, None, sft_alpha=0.5) is None
+        assert combine_onpolicy_offpolicy_loss(None, None, luffy_alpha=0.5) is None
+
+
+class TestComputeLuffyAlpha:
+    """Test the luffy_alpha anneal schedule."""
+
+    def test_disabled_returns_constant(self):
+        cfg = GRPOConfig(luffy_alpha=0.85, luffy_alpha_final=0.3, luffy_alpha_anneal_steps=0)
+        assert compute_luffy_alpha(cfg, 1) == pytest.approx(0.85)
+        assert compute_luffy_alpha(cfg, 10_000) == pytest.approx(0.85)
+
+    def test_starts_at_initial_value(self):
+        cfg = GRPOConfig(luffy_alpha=0.85, luffy_alpha_final=0.3, luffy_alpha_anneal_steps=100)
+        assert compute_luffy_alpha(cfg, 0) == pytest.approx(0.85)
+
+    def test_midpoint_is_halfway(self):
+        cfg = GRPOConfig(luffy_alpha=0.85, luffy_alpha_final=0.3, luffy_alpha_anneal_steps=100)
+        assert compute_luffy_alpha(cfg, 50) == pytest.approx((0.85 + 0.3) / 2)
+
+    def test_holds_at_final_value_past_anneal_steps(self):
+        cfg = GRPOConfig(luffy_alpha=0.85, luffy_alpha_final=0.3, luffy_alpha_anneal_steps=100)
+        assert compute_luffy_alpha(cfg, 100) == pytest.approx(0.3)
+        assert compute_luffy_alpha(cfg, 10_000) == pytest.approx(0.3)
+
+    def test_can_anneal_upward(self):
+        cfg = GRPOConfig(luffy_alpha=0.2, luffy_alpha_final=0.9, luffy_alpha_anneal_steps=10)
+        assert compute_luffy_alpha(cfg, 5) == pytest.approx(0.2 + 0.5 * (0.9 - 0.2))

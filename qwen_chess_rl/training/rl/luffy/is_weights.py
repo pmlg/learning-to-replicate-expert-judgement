@@ -131,7 +131,7 @@ def compute_luffy_loss(
     2. Confidence-based weighting to focus on uncertain positions.
 
     The returned loss is unweighted — balancing it against the on-policy
-    GRPO loss (via ``sft_alpha``) is the caller's responsibility, so this
+    GRPO loss (via ``luffy_alpha``) is the caller's responsibility, so this
     function stays reusable outside that specific combination.
 
     Args:

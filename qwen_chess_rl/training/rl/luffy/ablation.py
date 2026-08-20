@@ -1,7 +1,7 @@
 """Evaluation and ablation runner for LUFFY experiments.
 
 Runs multiple GRPO configurations with different LUFFY settings
-(trace_ratio, IS clipping, sft_alpha) and collects comparison
+(trace_ratio, IS clipping, luffy_alpha) and collects comparison
 metrics across all configurations.
 """
 
@@ -26,36 +26,36 @@ DEFAULT_ABLATION_GRID = {
     "baseline_grpo": {
         "use_luffy": False,
         "trace_ratio": 0.0,
-        "sft_alpha": 0.0,
+        "luffy_alpha": 0.0,
     },
     "luffy_low_trace": {
         "use_luffy": True,
         "trace_ratio": 0.1,
-        "sft_alpha": 0.3,
+        "luffy_alpha": 0.3,
         "is_clip": 0.2,
     },
     "luffy_medium_trace": {
         "use_luffy": True,
         "trace_ratio": 0.3,
-        "sft_alpha": 0.5,
+        "luffy_alpha": 0.5,
         "is_clip": 0.2,
     },
     "luffy_high_trace": {
         "use_luffy": True,
         "trace_ratio": 0.5,
-        "sft_alpha": 0.7,
+        "luffy_alpha": 0.7,
         "is_clip": 0.2,
     },
     "luffy_aggressive_clipping": {
         "use_luffy": True,
         "trace_ratio": 0.3,
-        "sft_alpha": 0.5,
+        "luffy_alpha": 0.5,
         "is_clip": 0.1,
     },
     "luffy_no_clipping": {
         "use_luffy": True,
         "trace_ratio": 0.3,
-        "sft_alpha": 0.5,
+        "luffy_alpha": 0.5,
         "is_clip": 0.9,
     },
 }
@@ -196,7 +196,7 @@ def generate_comparison_table(results: dict[str, dict]) -> str:
         "Config",
         "trace_ratio",
         "is_clip",
-        "sft_alpha",
+        "luffy_alpha",
         "Legal Move %",
         "Avg CP Loss",
         "Win Rate (SF)",
@@ -216,7 +216,7 @@ def generate_comparison_table(results: dict[str, dict]) -> str:
             name,
             str(cfg.get("trace_ratio", 0)),
             str(cfg.get("is_clip", 0)),
-            str(cfg.get("sft_alpha", 0)),
+            str(cfg.get("luffy_alpha", 0)),
             f"{metrics.get('legal_move_pct', 0):.1%}",
             f"{metrics.get('avg_centipawn_loss', 0):.1f}",
             f"{vs_sf.get('win_rate', 0):.1%}",

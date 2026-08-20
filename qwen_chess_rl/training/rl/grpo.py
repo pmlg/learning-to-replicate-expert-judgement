@@ -163,17 +163,31 @@ def generate_moves(
 
     prompt_len = inputs["input_ids"].shape[1]
 
-    # Generate
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=8,  # Moves are short UCI strings (e.g., "e2e4")
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+    # Generate — must run in eval mode. The policy model is kept in train()
+    # for its backward passes elsewhere in the loop, but generating while
+    # train() is active leaves dropout on and, combined with gradient
+    # checkpointing from prepare_model_for_kbit_training, corrupts sampled
+    # tokens into non-UCI gibberish (verified: the exact same checkpoint on
+    # the exact same FEN produces clean legal moves in eval() and garbage
+    # in train()) — every rollout would silently fail to produce a legal
+    # move, starving GRPO of any on-policy gradient. Restore the prior mode
+    # afterward so training resumes normally.
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=8,  # Moves are short UCI strings (e.g., "e2e4")
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+    finally:
+        if was_training:
+            model.train()
 
     # Decode only newly generated tokens (not the prompt)
     new_tokens = outputs[:, prompt_len:]
@@ -344,21 +358,21 @@ def grpo_trajectory_loss(
 def combine_onpolicy_offpolicy_loss(
     onpolicy_loss: torch.Tensor | None,
     offpolicy_loss: torch.Tensor | None,
-    sft_alpha: float,
+    luffy_alpha: float,
 ) -> torch.Tensor | None:
     """Blend the on-policy GRPO loss with the off-policy LUFFY loss.
 
-    total = (1 - sft_alpha) * onpolicy_loss + sft_alpha * offpolicy_loss
+    total = (1 - luffy_alpha) * onpolicy_loss + luffy_alpha * offpolicy_loss
 
     Either input may be ``None`` (no on-policy samples this step, or LUFFY
     disabled / nothing sampled from the buffer) — in that case the combined
     loss falls back to whichever term is available, still scaled by
-    ``sft_alpha``.
+    ``luffy_alpha``.
 
     Args:
         onpolicy_loss: On-policy GRPO loss, or None.
         offpolicy_loss: Off-policy LUFFY loss, or None.
-        sft_alpha: Ratio of off-policy to on-policy weight, in [0, 1].
+        luffy_alpha: Ratio of off-policy to on-policy weight, in [0, 1].
 
     Returns:
         Combined loss tensor, or None if both inputs are None.
@@ -366,10 +380,32 @@ def combine_onpolicy_offpolicy_loss(
     if onpolicy_loss is None and offpolicy_loss is None:
         return None
     if onpolicy_loss is None:
-        return sft_alpha * offpolicy_loss
+        return luffy_alpha * offpolicy_loss
     if offpolicy_loss is None:
-        return (1 - sft_alpha) * onpolicy_loss
-    return (1 - sft_alpha) * onpolicy_loss + sft_alpha * offpolicy_loss
+        return (1 - luffy_alpha) * onpolicy_loss
+    return (1 - luffy_alpha) * onpolicy_loss + luffy_alpha * offpolicy_loss
+
+
+def compute_luffy_alpha(cfg: GRPOConfig, step: int) -> float:
+    """Compute the current luffy_alpha under the anneal schedule.
+
+    Linearly interpolates from ``cfg.luffy_alpha`` to ``cfg.luffy_alpha_final``
+    over ``cfg.luffy_alpha_anneal_steps`` steps, then holds at the final
+    value. With ``luffy_alpha_anneal_steps == 0`` (default), returns
+    ``cfg.luffy_alpha`` unchanged — the anneal is opt-in.
+
+    Args:
+        cfg: GRPO configuration.
+        step: Current global training step (1-indexed, as incremented in
+            the training loop).
+
+    Returns:
+        The luffy_alpha value to use for this step.
+    """
+    if cfg.luffy_alpha_anneal_steps <= 0:
+        return cfg.luffy_alpha
+    frac = min(step / cfg.luffy_alpha_anneal_steps, 1.0)
+    return cfg.luffy_alpha + frac * (cfg.luffy_alpha_final - cfg.luffy_alpha)
 
 
 def train(cfg: GRPOConfig):
@@ -513,15 +549,17 @@ def train(cfg: GRPOConfig):
                     model, tokenizer, luffy_buffer, cfg, model.device,
                 )
                 luffy_loss_tensor = luffy_result.get("loss_tensor")
+                current_luffy_alpha = compute_luffy_alpha(cfg, global_step + 1)
                 if luffy_loss_tensor is not None:
                     loss = combine_onpolicy_offpolicy_loss(
-                        loss, luffy_loss_tensor, cfg.sft_alpha
+                        loss, luffy_loss_tensor, current_luffy_alpha
                     )
                 luffy_metrics = {
                     "luffy_is_ratio": luffy_result.get("mean_is_ratio", 0.0),
                     "luffy_confidence": luffy_result.get("mean_confidence_weight", 0.0),
                     "luffy_num_traces": luffy_result.get("num_traces", 0),
                     "luffy_raw_loss": luffy_result.get("raw_is_loss", 0.0),
+                    "luffy_alpha": current_luffy_alpha,
                 }
 
             global_step += 1
@@ -565,6 +603,7 @@ def train(cfg: GRPOConfig):
                         f" | IS ratio: {luffy_metrics['luffy_is_ratio']:.3f}"
                         f" | Conf weight: {luffy_metrics['luffy_confidence']:.3f}"
                         f" | Traces: {luffy_metrics['luffy_num_traces']}"
+                        f" | luffy_alpha: {luffy_metrics['luffy_alpha']:.3f}"
                     )
                 logger.info(log_msg)
 
@@ -588,24 +627,42 @@ def main():
 
     parser = argparse.ArgumentParser(description="GRPO train chess-playing model")
     parser.add_argument("--config", type=str, help="YAML config file")
-    parser.add_argument("--sft-checkpoint", type=str, default=GRPOConfig.sft_checkpoint)
-    parser.add_argument("--data-path", type=str, default=GRPOConfig.data_path)
-    parser.add_argument("--steps", type=int, default=GRPOConfig.num_training_steps)
-    parser.add_argument("--lr", type=float, default=GRPOConfig.learning_rate)
+    parser.add_argument("--sft-checkpoint", type=str, default=None)
+    parser.add_argument("--data-path", type=str, default=None)
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
     parser.add_argument(
         "--max-train-samples",
         type=int,
-        default=GRPOConfig.max_train_samples,
+        default=None,
         help="Cap FEN prompts sampled for rollouts (-1 = full dataset)",
     )
     parser.add_argument(
-        "--sft-alpha",
+        "--luffy-alpha",
         type=float,
         default=None,
         help=(
             "Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: "
-            "total = (1 - sft_alpha) * onpolicy + sft_alpha * offpolicy. "
-            f"0 = pure GRPO, 1 = pure LUFFY imitation (default: {GRPOConfig.sft_alpha})."
+            "total = (1 - luffy_alpha) * onpolicy + luffy_alpha * offpolicy. "
+            f"0 = pure GRPO, 1 = pure LUFFY imitation (default: {GRPOConfig.luffy_alpha})."
+        ),
+    )
+    parser.add_argument(
+        "--luffy-alpha-final",
+        type=float,
+        default=None,
+        help=(
+            "Target luffy_alpha to anneal towards over --luffy-alpha-anneal-steps "
+            f"(default: {GRPOConfig.luffy_alpha_final})."
+        ),
+    )
+    parser.add_argument(
+        "--luffy-alpha-anneal-steps",
+        type=int,
+        default=None,
+        help=(
+            "Steps over which luffy_alpha linearly anneals to luffy_alpha_final. "
+            f"0 disables annealing (default: {GRPOConfig.luffy_alpha_anneal_steps})."
         ),
     )
     args = parser.parse_args()
@@ -619,14 +676,22 @@ def main():
                 if hasattr(cfg, key):
                     setattr(cfg, key, value)
 
-    cfg.sft_checkpoint = args.sft_checkpoint or cfg.sft_checkpoint
-    cfg.data_path = args.data_path or cfg.data_path
-    cfg.num_training_steps = args.steps or cfg.num_training_steps
-    cfg.max_train_samples = args.max_train_samples
-    if args.lr:
+    if args.sft_checkpoint is not None:
+        cfg.sft_checkpoint = args.sft_checkpoint
+    if args.data_path is not None:
+        cfg.data_path = args.data_path
+    if args.steps is not None:
+        cfg.num_training_steps = args.steps
+    if args.max_train_samples is not None:
+        cfg.max_train_samples = args.max_train_samples
+    if args.lr is not None:
         cfg.learning_rate = args.lr
-    if args.sft_alpha is not None:
-        cfg.sft_alpha = args.sft_alpha
+    if args.luffy_alpha is not None:
+        cfg.luffy_alpha = args.luffy_alpha
+    if args.luffy_alpha_final is not None:
+        cfg.luffy_alpha_final = args.luffy_alpha_final
+    if args.luffy_alpha_anneal_steps is not None:
+        cfg.luffy_alpha_anneal_steps = args.luffy_alpha_anneal_steps
 
     train(cfg)
 

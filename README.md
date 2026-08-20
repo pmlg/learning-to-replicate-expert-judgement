@@ -322,7 +322,7 @@ bash scripts/train_grpo.sh \
 | `--output DIR` | `checkpoints/rl` | RL checkpoint output directory |
 | `--steps N` | `1000` | Number of GRPO training steps |
 | `--lr RATE` | `5e-6` | Peak learning rate |
-| `--sft-alpha RATIO` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `(1 - sft_alpha) * onpolicy + sft_alpha * offpolicy`. `0` = pure GRPO, `1` = pure LUFFY imitation |
+| `--luffy-alpha RATIO` | `0.85` | Ratio of off-policy (LUFFY) to on-policy (GRPO) loss: `(1 - luffy_alpha) * onpolicy + luffy_alpha * offpolicy`. `0` = pure GRPO, `1` = pure LUFFY imitation |
 | `--max-train-samples N` | `500000` | Cap on FEN prompts sampled for rollouts (`-1` = full dataset) |
 
 Requires `STOCKFISH_PATH` (default `stockfish`) to point to a working Stockfish binary — the script warns if it can't find one.

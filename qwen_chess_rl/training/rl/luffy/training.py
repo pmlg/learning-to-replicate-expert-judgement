@@ -181,9 +181,16 @@ def luffy_offpolicy_loss(
     if buffer.num_off_policy == 0:
         return {"loss": 0.0, "mean_is_ratio": 0.0, "mean_confidence_weight": 0.0, "num_traces": 0}
 
-    # Sample off-policy traces
-    sample_size = max(int(cfg.batch_size * cfg.trace_ratio), 1)
-    sample = buffer.sample(sample_size)
+    # Sample off-policy traces. buffer.sample() already applies trace_ratio
+    # internally to split its input batch_size between on/off-policy (see
+    # ExperienceBuffer.sample) — passing cfg.batch_size here is the batch
+    # this step is drawing from, not the off-policy count itself. Pre-
+    # multiplying by trace_ratio before calling sample() applied trace_ratio
+    # twice (e.g. batch_size=8, trace_ratio=0.3 -> int(8*0.3)=2, then
+    # buffer.sample(2) -> int(2*0.3)=0), which silently zeroed out the
+    # off-policy term at the default config — LUFFY never actually
+    # contributed to the loss.
+    sample = buffer.sample(cfg.batch_size)
     traces = sample["off_policy"]
 
     if not traces:

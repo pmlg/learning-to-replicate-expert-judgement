@@ -14,7 +14,7 @@ DATA_PATH=""
 OUTPUT_DIR="checkpoints/rl-luffy"
 STEPS=1000
 LR=5e-6
-SFT_ALPHA="0.85"
+LUFFY_ALPHA="0.85"
 MAX_TRAIN_SAMPLES=""
 
 while [[ $# -gt 0 ]]; do
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
         --output) OUTPUT_DIR="$2"; shift 2 ;;
         --steps) STEPS="$2"; shift 2 ;;
         --lr) LR="$2"; shift 2 ;;
-        --sft-alpha) SFT_ALPHA="$2"; shift 2 ;;
+        --luffy-alpha) LUFFY_ALPHA="$2"; shift 2 ;;
         --max-train-samples) MAX_TRAIN_SAMPLES="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -37,7 +37,7 @@ echo "Data: ${DATA_PATH:-<config default>}"
 echo "Output: $OUTPUT_DIR"
 echo "Steps: $STEPS"
 echo "Learning rate: $LR"
-echo "sft_alpha: ${SFT_ALPHA:-<config default>}"
+echo "luffy_alpha: ${LUFFY_ALPHA:-<config default>}"
 echo "Max train samples: ${MAX_TRAIN_SAMPLES:-<config default>}"
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
@@ -56,7 +56,7 @@ uv run python -m qwen_chess_rl.training.rl.grpo \
     ${DATA_PATH:+--data-path "$DATA_PATH"} \
     --steps "$STEPS" \
     --lr "$LR" \
-    ${SFT_ALPHA:+--sft-alpha "$SFT_ALPHA"} \
+    ${LUFFY_ALPHA:+--luffy-alpha "$LUFFY_ALPHA"} \
     ${MAX_TRAIN_SAMPLES:+--max-train-samples "$MAX_TRAIN_SAMPLES"}
 
 echo "GRPO training complete. Model saved to $OUTPUT_DIR"
