@@ -510,7 +510,16 @@ def train(cfg: GRPOConfig):
                     if move_uci:
                         full_game = random.random() < cfg.rollout_full_game_ratio
                         max_plies = None if full_game else cfg.rollout_max_plies
-                        traj = play_rollout(model, tokenizer, fen, move_uci, cfg, max_plies=max_plies)
+                        try:
+                            traj = play_rollout(
+                                model, tokenizer, fen, move_uci, cfg, max_plies=max_plies,
+                            )
+                        except Exception as exc:
+                            # A rollout crash (e.g. the Stockfish subprocess
+                            # dying mid-game) must not take down a training
+                            # run that's hours into progress — treat it the
+                            # same as an illegal/empty move.
+                            logger.warning("Rollout failed for %s: %s", fen, exc)
                     if traj is None:
                         group_trajectories.append(None)
                         group_rewards.append(-10.0)  # illegal or empty move

@@ -233,8 +233,16 @@ def play_rollout(
 
             result.num_plies += 1
     finally:
+        # The engine may have already died mid-rollout (e.g. a Stockfish
+        # crash) — every other engine call above already tolerates that,
+        # but engine.quit() itself raises EngineTerminatedError on a dead
+        # engine, which was left unhandled and took down the entire
+        # training process on an incidental engine crash.
         if engine is not None:
-            engine.quit()
+            try:
+                engine.quit()
+            except Exception as exc:
+                logger.warning("Failed to cleanly shut down rollout engine: %s", exc)
 
 
 def _generate_one_move(model, tokenizer, fen: str, cfg: GRPOConfig) -> str:

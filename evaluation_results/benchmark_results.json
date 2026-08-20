@@ -1,5 +1,5 @@
 {
-  "checkpoint": "checkpoints/rl/final/",
+  "checkpoint": "checkpoints/sft/final/",
   "temperature": 0.1,
   "engine": "llm",
   "vs_stockfish": {
@@ -9,21 +9,21 @@
     "win_rate": 0.0,
     "draw_rate": 0.0,
     "loss_rate": 1.0,
-    "avg_game_length": 35.2,
+    "avg_game_length": 31.6,
     "total_games": 20,
     "estimated_elo": 1600
   },
   "vs_random": {
     "wins": 0,
-    "draws": 8,
-    "losses": 2,
+    "draws": 10,
+    "losses": 0,
     "win_rate": 0.0,
     "total_games": 10
   },
   "test_set_metrics": {
-    "avg_centipawn_loss": 1006.683,
-    "median_centipawn_loss": 103.5,
-    "std_centipawn_loss": 2742.066150644619,
+    "avg_centipawn_loss": 1006.818,
+    "median_centipawn_loss": 113.0,
+    "std_centipawn_loss": 2766.3889377446553,
     "legal_move_pct": 1.0,
     "sample_count": 1000
   }
