@@ -182,7 +182,12 @@ class TraceGenerator:
         try:
             for move in legal_moves[:8]:  # Top-K for efficiency
                 board.push(move)
-                info = engine.analyse(board, chess.engine.Limit(depth=self.engine_depth))
+                # time= activates python-chess's hang safety-net (see
+                # rollout.py/reward.py) — a depth-only Limit can otherwise
+                # block forever on a pathological position.
+                info = engine.analyse(
+                    board, chess.engine.Limit(depth=self.engine_depth, time=10.0)
+                )
                 board.pop()
                 score_obj = info.get("score")
                 if score_obj is None:
@@ -203,7 +208,10 @@ class TraceGenerator:
             logger.debug("Behaviour log-prob computation failed: %s", exc)
             return 0.0
         finally:
-            engine.quit()
+            try:
+                engine.quit()
+            except Exception:
+                pass
 
         if not scores:
             return 0.0

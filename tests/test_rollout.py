@@ -52,10 +52,30 @@ class TestComputeEpisodeReward:
     def test_draw(self):
         assert compute_episode_reward("draw") == DRAW_REWARD
 
-    def test_capped_outcome_gets_no_reward(self):
-        # A capped rollout ("just a normal move") carries no reward at all —
-        # not even a graded signal from the position's eval at the cutoff.
+    def test_capped_outcome_without_cutoff_eval_gets_no_reward(self):
+        # No cutoff_eval available (e.g. no engine) -> no signal at all.
         assert compute_episode_reward(None) == 0.0
+
+    def test_capped_outcome_uses_win_probability_from_cutoff_eval(self):
+        # Chess-R1 style dense reward: a winning cutoff position scores
+        # near WIN_REWARD, a losing one near LOSS_REWARD, a balanced one
+        # near zero — instead of flat 0.0 regardless of position quality.
+        assert compute_episode_reward(None, cutoff_eval=0.0) == pytest.approx(0.0, abs=1e-6)
+        winning = compute_episode_reward(None, cutoff_eval=400.0)
+        losing = compute_episode_reward(None, cutoff_eval=-400.0)
+        assert 0.0 < winning < WIN_REWARD
+        assert LOSS_REWARD < losing < 0.0
+        assert winning == pytest.approx(-losing)
+
+    def test_capped_outcome_mate_score_saturates_near_win_reward(self):
+        # Mate scores arrive pre-encoded as +/-10000 (see rollout.py) — the
+        # logistic conversion should saturate close to WIN_REWARD/LOSS_REWARD.
+        assert compute_episode_reward(None, cutoff_eval=10000.0) == pytest.approx(
+            WIN_REWARD, abs=1e-3
+        )
+        assert compute_episode_reward(None, cutoff_eval=-10000.0) == pytest.approx(
+            LOSS_REWARD, abs=1e-3
+        )
 
     def test_legal_move_bonus_is_zero(self):
         # Legality alone earns nothing — only game outcome matters.

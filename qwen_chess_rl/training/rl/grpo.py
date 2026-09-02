@@ -526,7 +526,9 @@ def train(cfg: GRPOConfig):
                     else:
                         group_trajectories.append(traj)
                         group_rewards.append(
-                            compute_episode_reward(traj.outcome, traj.starting_eval)
+                            compute_episode_reward(
+                                traj.outcome, traj.starting_eval, traj.cutoff_eval,
+                            )
                         )
                 trajectories.append(group_trajectories)
                 all_rewards.append(group_rewards)

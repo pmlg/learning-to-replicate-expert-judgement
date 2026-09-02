@@ -63,13 +63,19 @@ LOSING_EVAL_THRESHOLD: float = -150.0  # centipawns
 def compute_episode_reward(
     outcome: Optional[str],
     starting_eval: Optional[float] = None,
+    cutoff_eval: Optional[float] = None,
 ) -> float:
     """Convert a rollout's terminal outcome into a scalar reward.
 
-    Only a decisive outcome carries reward: winning is the sole positive
-    signal, losing is a heavy penalty, and a capped rollout — one that
-    didn't reach a natural conclusion, i.e. "just a normal move" — gets
-    no reward at all, regardless of the position's eval at the cutoff.
+    A decisive outcome (win/loss) is the ground truth, so it's scored
+    exactly. A capped rollout — one that didn't reach a natural conclusion —
+    used to get a flat 0.0 regardless of how good or bad the final position
+    was, wasting signal on the (often majority) share of rollouts that hit
+    the ply cap. It now gets a dense, Chess-R1-style reward (arXiv:2507.00726)
+    derived from the estimated win probability at the cutoff — the same
+    logistic win-probability conversion used by compute_reward's Q(s,a) —
+    scaled onto WIN_REWARD/LOSS_REWARD's range so it composes consistently
+    with the terminal cases within a GRPO group.
 
     Args:
         outcome: 'win', 'loss', 'draw' if the game reached a natural
@@ -81,6 +87,12 @@ def compute_episode_reward(
             clearly lost (below LOSING_EVAL_THRESHOLD), winning wasn't a
             realistic objective, so salvaging a draw is rewarded well
             instead of just "less bad than losing".
+        cutoff_eval: Centipawn evaluation of the position at the ply cap,
+            from the policy's perspective. Only used when ``outcome`` is
+            None (capped) — converted to a win-probability-based reward.
+            Mate scores arrive pre-encoded as ±10000 (see rollout.py's
+            ``_score_relative_to_policy``), which saturates the logistic
+            conversion near 0/1 with no special-casing needed here.
 
     Returns:
         Scalar reward on the same scale as WIN_REWARD/LOSS_REWARD.
@@ -93,8 +105,11 @@ def compute_episode_reward(
         if starting_eval is not None and starting_eval < LOSING_EVAL_THRESHOLD:
             return DRAW_REWARD_WHEN_LOSING
         return DRAW_REWARD
-    # Capped (no natural conclusion) — a "normal move" gets no reward.
-    return 0.0
+    # Capped (no natural conclusion).
+    if cutoff_eval is None:
+        return 0.0
+    win_prob = _cp_to_win_prob(cutoff_eval)
+    return (win_prob - 0.5) * 2.0 * WIN_REWARD
 
 
 def _find_stockfish() -> Optional[str]:
@@ -125,6 +140,13 @@ def _find_stockfish() -> Optional[str]:
     return None
 
 
+def _cp_to_win_prob(cp: float) -> float:
+    """Convert a centipawn score to a win probability via the standard
+    logistic (Lichess / Stockfish WDL) scale. Single source of truth for
+    the cp->winprob mapping, shared by the per-move and episode rewards."""
+    return 1.0 / (1.0 + 10.0 ** (-cp / CP_SCALE))
+
+
 def _score_to_win_prob(score_obj: Optional[chess.engine.Score]) -> float:
     """Convert a python-chess Score (relative to side to move) to win prob.
 
@@ -140,7 +162,7 @@ def _score_to_win_prob(score_obj: Optional[chess.engine.Score]) -> float:
     cp = score_obj.score()
     if cp is None:
         return 0.5
-    return 1.0 / (1.0 + 10.0 ** (-cp / CP_SCALE))
+    return _cp_to_win_prob(cp)
 
 
 class RewardEngine:
@@ -197,8 +219,15 @@ class RewardEngine:
             return 0.5
         for attempt in range(2):
             try:
+                # time= is required alongside depth= — python-chess's own
+                # hang safety-net (SimpleEngine.timeout, default 10s) only
+                # activates when Limit.time is set. Without it, a
+                # pathological/invalid position (as exercised by
+                # test_batch_survives_bad_fen) can wedge the engine's async
+                # event loop with no exception ever raised, hanging forever
+                # instead of triggering the crash-recovery path below.
                 info = self._engine.analyse(
-                    board, chess.engine.Limit(depth=self.depth)
+                    board, chess.engine.Limit(depth=self.depth, time=5.0)
                 )
                 score = info.get("score")
                 # PovScore.relative is a PROPERTY -> Score from side-to-move

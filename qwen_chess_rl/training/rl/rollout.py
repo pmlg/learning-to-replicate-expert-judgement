@@ -102,7 +102,12 @@ def _select_opponent_move(
     """
     if engine is not None:
         try:
-            play_result = engine.play(board, chess.engine.Limit(depth=depth))
+            # time= is required, not just depth= — python-chess's own hang
+            # safety-net (SimpleEngine.timeout, default 10s) only activates
+            # when Limit.time is set. A depth-only Limit on a pathological
+            # position can otherwise block forever with no exception ever
+            # raised, silently freezing the whole training run.
+            play_result = engine.play(board, chess.engine.Limit(depth=depth, time=5.0))
             if play_result.move is not None:
                 return play_result.move
         except Exception as exc:
@@ -120,7 +125,9 @@ def _cutoff_eval(
     if engine is None:
         return 0.0
     try:
-        info = engine.analyse(board, chess.engine.Limit(depth=depth))
+        # See _select_opponent_move — time= activates python-chess's hang
+        # safety-net; depth-only Limit can otherwise block forever.
+        info = engine.analyse(board, chess.engine.Limit(depth=depth, time=5.0))
         score_obj = info.get("score")
         if score_obj is None:
             return 0.0

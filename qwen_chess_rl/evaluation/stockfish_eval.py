@@ -59,7 +59,10 @@ class StockfishPlayer:
         if not self.engine:
             return None
         try:
-            result = self.engine.play(board, chess.engine.Limit(depth=self.depth))
+            # time= activates python-chess's hang safety-net (see
+            # rollout.py/reward.py) — a depth-only Limit can otherwise
+            # block forever on a pathological position.
+            result = self.engine.play(board, chess.engine.Limit(depth=self.depth, time=5.0))
             return result.move
         except Exception:
             return None
