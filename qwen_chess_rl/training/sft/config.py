@@ -44,7 +44,7 @@ class SFTConfig:
     """
 
     # Model
-    model_name: str = "Qwen/Qwen3-4B"
+    model_name: str = "Qwen/Qwen3.5-0.8B"
     lora_r: int = 32
     lora_alpha: int = 32
     lora_dropout: float = 0.1
@@ -57,7 +57,7 @@ class SFTConfig:
     )
 
     # Quantization
-    use_4bit: bool = True
+    use_4bit: bool = False
     bnb_4bit_compute_dtype: str = "bfloat16"
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
@@ -78,10 +78,10 @@ class SFTConfig:
     save_total_limit: int = 3
 
     # Precision
-    bf16: bool = True
-    fp16: bool = False
+    bf16: bool = False
+    fp16: bool = True
     gradient_checkpointing: bool = True
-    optim: str = "paged_adamw_8bit"
+    optim: str = "adamw_torch"
 
     # Data
     seed: int = 42

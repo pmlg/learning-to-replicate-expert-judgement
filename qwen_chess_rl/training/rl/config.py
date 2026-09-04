@@ -109,10 +109,8 @@ class GRPOConfig:
     data_path: str = "data/processed"
     max_train_samples: int = 500_000  # -1 = use full set
 
-    # Quantization — the policy and reference model are each a full copy of
-    # the base model; without 4-bit quantization, two bf16 9B-param copies
-    # (~18GB each) don't fit on a single 24-32GB GPU.
-    use_4bit: bool = True
+    # Quantization — disabled for fp16 training on smaller models.
+    use_4bit: bool = False
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
 

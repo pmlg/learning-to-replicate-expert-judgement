@@ -56,9 +56,8 @@ class FenPromptDataset(Dataset):
 def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
     """Load the SFT-fine-tuned model for RL training.
 
-    Loaded in 4-bit (matching the SFT stage) — the policy and reference
-    model are each a full copy of the base model, and two full-precision
-    9B-param copies don't fit in a single 24-32GB GPU alongside activations.
+    Optionally loaded in 4-bit if cfg.use_4bit is True (for memory efficiency
+    on larger models). For smaller models with fp16, full precision may fit.
 
     Args:
         cfg: GRPO configuration.
@@ -78,25 +77,34 @@ def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=cfg.use_4bit,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_quant_type=cfg.bnb_4bit_quant_type,
-        bnb_4bit_use_double_quant=cfg.bnb_4bit_use_double_quant,
-    )
+    # Prepare quantization config if enabled
+    quantization_config = None
+    if cfg.use_4bit:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=cfg.use_4bit,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type=cfg.bnb_4bit_quant_type,
+            bnb_4bit_use_double_quant=cfg.bnb_4bit_use_double_quant,
+        )
 
     adapter_config_path = Path(cfg.sft_checkpoint) / "adapter_config.json"
     if adapter_config_path.exists():
         from peft import PeftConfig, PeftModel, prepare_model_for_kbit_training
 
         peft_config = PeftConfig.from_pretrained(cfg.sft_checkpoint)
+
+        model_kwargs = {
+            "device_map": "auto",
+            "trust_remote_code": True,
+        }
+        if quantization_config:
+            model_kwargs["quantization_config"] = quantization_config
+
         base_model = AutoModelForCausalLM.from_pretrained(
             peft_config.base_model_name_or_path,
-            device_map="auto",
-            trust_remote_code=True,
-            quantization_config=quantization_config,
+            **model_kwargs,
         )
-        if trainable:
+        if trainable and cfg.use_4bit:
             base_model = prepare_model_for_kbit_training(base_model)
         # is_trainable=True is required — loading an adapter for inference
         # (the default) freezes it, and loss.backward() would fail with
@@ -111,11 +119,16 @@ def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
             "trainable" if trainable else "frozen",
         )
     else:
+        model_kwargs = {
+            "device_map": "auto",
+            "trust_remote_code": True,
+        }
+        if quantization_config:
+            model_kwargs["quantization_config"] = quantization_config
+
         model = AutoModelForCausalLM.from_pretrained(
             cfg.sft_checkpoint,
-            device_map="auto",
-            trust_remote_code=True,
-            quantization_config=quantization_config,
+            **model_kwargs,
         )
         logger.warning("Model does not appear to have LoRA adapters loaded.")
 

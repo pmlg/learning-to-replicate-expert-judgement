@@ -67,7 +67,7 @@ def create_lora_config(cfg: SFTConfig) -> LoraConfig:
 
 
 def load_model_and_tokenizer(cfg: SFTConfig):
-    """Load the configured Qwen model with 4-bit quantization and LoRA.
+    """Load the configured Qwen model with optional 4-bit quantization and LoRA.
 
     Args:
         cfg: Training configuration.
@@ -76,18 +76,31 @@ def load_model_and_tokenizer(cfg: SFTConfig):
         (model, tokenizer) tuple.
     """
     logger.info("Loading model: %s", cfg.model_name)
-    quantization_config = create_quantization_config(cfg)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.model_name,
-        quantization_config=quantization_config,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if cfg.bf16 else torch.float16,
-    )
+    # Determine torch dtype
+    if cfg.bf16:
+        torch_dtype = torch.bfloat16
+    elif cfg.fp16:
+        torch_dtype = torch.float16
+    else:
+        torch_dtype = torch.float32
 
-    # Prepare for k-bit training
-    model = prepare_model_for_kbit_training(model)
+    # Load model with optional quantization
+    kwargs = {
+        "device_map": "auto",
+        "trust_remote_code": True,
+        "torch_dtype": torch_dtype,
+    }
+
+    if cfg.use_4bit:
+        quantization_config = create_quantization_config(cfg)
+        kwargs["quantization_config"] = quantization_config
+
+    model = AutoModelForCausalLM.from_pretrained(cfg.model_name, **kwargs)
+
+    # Prepare for k-bit training if using quantization
+    if cfg.use_4bit:
+        model = prepare_model_for_kbit_training(model)
 
     # Apply LoRA
     lora_config = create_lora_config(cfg)
