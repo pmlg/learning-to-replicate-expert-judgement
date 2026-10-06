@@ -255,13 +255,23 @@ bash scripts/train_sft.sh --max-train-samples -1 --max-eval-samples -1
 
 # With custom options
 bash scripts/train_sft.sh \
-    --model Qwen/Qwen3-4B \
+    --model Qwen/Qwen3.5-0.8B \
     --data data/processed \
     --output checkpoints/sft \
-    --batch-size 4 \
+    --batch-size 192 \
     --lr 2e-4 \
     --max-steps 10000 \
     --max-train-samples 50000
+```
+
+Example: 
+```bash
+bash scripts/train_sft.sh \
+    --model qwen/qwen3.5-9B \
+    --batch-size 1024 \
+    --max-steps 10000 \
+    --data data/processed \
+    --max-train-samples 50000 
 ```
 
 **Options** (`bash scripts/train_sft.sh [options]`):

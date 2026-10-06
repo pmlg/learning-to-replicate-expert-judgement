@@ -10,21 +10,21 @@
       "win_rate": 0.0,
       "draw_rate": 0.0,
       "loss_rate": 1.0,
-      "avg_game_length": 34.3,
+      "avg_game_length": 27.7,
       "total_games": 20,
       "estimated_elo": 1600
     },
     "vs_random": {
       "wins": 0,
-      "draws": 10,
-      "losses": 0,
+      "draws": 9,
+      "losses": 1,
       "win_rate": 0.0,
       "total_games": 10
     },
     "test_set_metrics": {
-      "avg_centipawn_loss": 1020.731,
-      "median_centipawn_loss": 115.0,
-      "std_centipawn_loss": 2772.8154115698003,
+      "avg_centipawn_loss": 1022.727,
+      "median_centipawn_loss": 90.0,
+      "std_centipawn_loss": 2822.9841566099867,
       "legal_move_pct": 1.0,
       "sample_count": 1000
     }
@@ -40,21 +40,21 @@
       "win_rate": 0.0,
       "draw_rate": 0.0,
       "loss_rate": 1.0,
-      "avg_game_length": 31.6,
+      "avg_game_length": 24.3,
       "total_games": 20,
       "estimated_elo": 1600
     },
     "vs_random": {
       "wins": 0,
-      "draws": 10,
-      "losses": 0,
+      "draws": 9,
+      "losses": 1,
       "win_rate": 0.0,
       "total_games": 10
     },
     "test_set_metrics": {
-      "avg_centipawn_loss": 1006.818,
-      "median_centipawn_loss": 113.0,
-      "std_centipawn_loss": 2766.3889377446553,
+      "avg_centipawn_loss": 1045.671,
+      "median_centipawn_loss": 81.0,
+      "std_centipawn_loss": 2916.9103343707707,
       "legal_move_pct": 1.0,
       "sample_count": 1000
     }
