@@ -29,6 +29,9 @@ dependencies = [
     "httpx>=0.25.0",
     "docker>=6.1.0",
     "python-dotenv>=1.0.0",
+    "hl-gauss-pytorch>=0.3.0",
+    "flash-linear-attention>=0.5.2",
+    "sentencepiece>=0.2.0",
 ]
 
 [project.optional-dependencies]

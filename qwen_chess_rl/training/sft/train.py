@@ -23,6 +23,65 @@ from qwen_chess_rl.data.dataset import tokenize_example
 logger = logging.getLogger(__name__)
 
 
+def get_base_hidden_size(model) -> int:
+    """Get the text-decoder hidden size, handling Qwen3.5's nested text_config."""
+    config = model.config
+    text_config = getattr(config, "text_config", None)
+    return (text_config or config).hidden_size
+
+
+class ChessDataCollator:
+    """Wraps a base collator, batching ``cp_target`` separately.
+
+    ``DataCollatorForSeq2Seq`` only knows how to pad token-sequence fields
+    (input_ids/attention_mask/labels); the scalar ``cp_target`` auxiliary
+    label has to be pulled out before delegating to it and re-attached as a
+    plain tensor afterward.
+    """
+
+    def __init__(self, base_collator):
+        self.base_collator = base_collator
+
+    def __call__(self, features: list[dict]) -> dict:
+        cp_targets = [f.pop("cp_target") for f in features]
+        batch = self.base_collator(features)
+        batch["cp_target"] = torch.tensor(cp_targets, dtype=torch.float32)
+        return batch
+
+
+class ChessSFTTrainer(Trainer):
+    """Trainer that adds an auxiliary HL-Gauss value loss to the move CE loss.
+
+    The value head reads the hidden state at the last prompt token (the same
+    position whose logits predict the first move token) and predicts the
+    position's Stockfish eval — an auxiliary chess-understanding signal
+    alongside pure move imitation. See SFTConfig.use_hl_gauss_aux_loss.
+    """
+
+    def __init__(self, *args, value_head=None, aux_weight: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.value_head = value_head
+        self.aux_weight = aux_weight
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        cp_target = inputs.pop("cp_target", None)
+        outputs = model(**inputs, output_hidden_states=self.value_head is not None)
+        loss = outputs.loss
+
+        if self.value_head is not None and cp_target is not None:
+            labels = inputs["labels"]
+            # First non-masked label position == first generated (move) token;
+            # the hidden state one position earlier is what predicts it.
+            first_label_idx = (labels != -100).float().argmax(dim=-1)
+            value_idx = (first_label_idx - 1).clamp(min=0)
+            hidden = outputs.hidden_states[-1]
+            value_embed = hidden[torch.arange(hidden.size(0), device=hidden.device), value_idx]
+            value_loss = self.value_head(value_embed.float(), cp_target.to(hidden.device))
+            loss = loss + self.aux_weight * value_loss
+
+        return (loss, outputs) if return_outputs else loss
+
+
 def create_quantization_config(cfg: SFTConfig) -> BitsAndBytesConfig:
     """Create 4-bit quantization config for QLoRA.
 
@@ -97,6 +156,7 @@ def load_model_and_tokenizer(cfg: SFTConfig):
         kwargs["quantization_config"] = quantization_config
 
     model = AutoModelForCausalLM.from_pretrained(cfg.model_name, **kwargs)
+    hidden_size = get_base_hidden_size(model)
 
     # Prepare for k-bit training if using quantization
     if cfg.use_4bit:
@@ -106,6 +166,23 @@ def load_model_and_tokenizer(cfg: SFTConfig):
     lora_config = create_lora_config(cfg)
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+
+    # Auxiliary HL-Gauss value head — a submodule of `model` so its params
+    # ride along in model.parameters() (picked up by Trainer's optimizer)
+    # without needing a separate optimizer/param group. Kept in float32
+    # regardless of the base model's dtype; HLGaussLoss forces fp32 math
+    # internally anyway (see hl_gauss_pytorch.hl_gauss.HLGaussLossFromSupport).
+    if cfg.use_hl_gauss_aux_loss:
+        from hl_gauss_pytorch import HLGaussLayer
+
+        model.value_head = HLGaussLayer(
+            dim=hidden_size,
+            hl_gauss_loss=dict(
+                min_value=-cfg.hl_gauss_cp_clip,
+                max_value=cfg.hl_gauss_cp_clip,
+                num_bins=cfg.hl_gauss_num_bins,
+            ),
+        ).to(device=next(model.parameters()).device, dtype=torch.float32)
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -213,11 +290,16 @@ def resolve_report_to(report_to: str) -> str:
     return "wandb"
 
 
-def train(cfg: SFTConfig):
+def train(cfg: SFTConfig, resume_from_checkpoint: str | bool | None = None):
     """Run the full SFT training loop.
 
     Args:
         cfg: Training configuration.
+        resume_from_checkpoint: Path to a specific checkpoint directory to
+            resume from, ``True`` to auto-resume from the latest checkpoint
+            in ``cfg.output_dir``, or ``None`` to start fresh. A run this
+            long (hours) losing all progress to a crash or restart otherwise
+            would be costly.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -258,7 +340,9 @@ def train(cfg: SFTConfig):
         optim=cfg.optim,
         seed=cfg.seed,
         report_to=report_to,
-        logging_dir=str(output_dir / "logs"),
+        # cp_target isn't a model.forward() arg, so the Trainer's default
+        # column-pruning would drop it before it ever reaches the collator.
+        remove_unused_columns=False,
         eval_strategy="steps",
         save_strategy="steps",
         load_best_model_at_end=True,
@@ -268,26 +352,30 @@ def train(cfg: SFTConfig):
         ddp_find_unused_parameters=False,
     )
 
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer,
-        pad_to_multiple_of=8,
-        padding=True,
-        label_pad_token_id=-100,
+    data_collator = ChessDataCollator(
+        DataCollatorForSeq2Seq(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=8,
+            padding=True,
+            label_pad_token_id=-100,
+        )
     )
 
     # Initialize trainer
-    trainer = Trainer(
+    trainer = ChessSFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         processing_class=tokenizer,
+        value_head=getattr(model, "value_head", None),
+        aux_weight=cfg.hl_gauss_aux_weight,
     )
 
     # Train
-    logger.info("Starting SFT training ...")
-    trainer.train()
+    logger.info("Starting SFT training (resume_from_checkpoint=%s) ...", resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     # Save final model
     final_path = output_dir / "final"
@@ -321,6 +409,12 @@ def main():
         help="Cap validation examples (-1 = full dataset)",
     )
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint dir to resume from, or 'auto' for the latest checkpoint in --output-dir",
+    )
     args = parser.parse_args()
 
     cfg = SFTConfig()
@@ -350,7 +444,10 @@ def main():
     if args.no_wandb:
         cfg.report_to = "none"
 
-    train(cfg)
+    resume = args.resume_from_checkpoint
+    if resume == "auto":
+        resume = True
+    train(cfg, resume_from_checkpoint=resume)
 
 
 if __name__ == "__main__":

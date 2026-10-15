@@ -79,7 +79,20 @@ class GRPOConfig:
         opponent_depth: Stockfish search depth for the opponent's moves
             during rollouts. Deliberately shallow — a full-strength
             opponent would rarely lose to a still-learning policy, starving
-            training of win signal.
+            training of win signal. Starting value of the anneal (see
+            opponent_depth_final / opponent_depth_anneal_steps).
+        opponent_depth_final: Value opponent_depth linearly anneals *to*
+            over opponent_depth_anneal_steps. Rationale: training
+            exclusively against a fixed shallow opponent while being
+            Elo-evaluated against a much stronger one (see eval_depth in
+            evaluation/benchmark.py) leaves the policy never having faced
+            anything resembling eval-time difficulty — ramping the
+            opponent up over training closes that train/eval gap.
+        opponent_depth_anneal_steps: Number of steps over which
+            opponent_depth linearly interpolates (rounded) to
+            opponent_depth_final. 0 (default) disables annealing —
+            opponent_depth stays constant, matching the original
+            static-opponent behaviour.
         rollout_vet_enabled: Whether a shallow classical search vets the
             policy's own moves during a rollout (see
             :func:`qwen_chess_rl.training.rl.rollout._vet_move`), replacing
@@ -101,25 +114,36 @@ class GRPOConfig:
     """
 
     # Model
-    sft_checkpoint: str = "checkpoints/sft/final"
-    output_dir: str = "checkpoints/rl"
+    sft_checkpoint: str = "checkpoints/sft-9b/final"
+    output_dir: str = "checkpoints/rl-9b"
 
     # Data — separate from SFT's data_path; the two stages can use
     # different processed datasets if desired.
     data_path: str = "data/processed"
     max_train_samples: int = 500_000  # -1 = use full set
 
-    # Quantization — disabled for fp16 training on smaller models.
-    use_4bit: bool = False
+    # Quantization — the frozen base model is quantized to 4-bit NF4 to keep
+    # total VRAM under the operator-mandated 25GB budget at 9B scale: bf16
+    # weights alone (~18GB) plus fixed CUDA/allocator overhead already sat
+    # at the 25GB ceiling before any trajectory-loss computation, regardless
+    # of batch_size/num_generations. Only the base weights are quantized;
+    # the LoRA adapter itself still trains in bf16.
+    use_4bit: bool = True
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
 
     # GRPO hyperparameters
+    # grpo_trajectory_loss backwards each trajectory immediately rather
+    # than accumulating the whole batch's graphs (see grpo.py), so peak
+    # VRAM is dominated by the quantized base weights + one in-flight
+    # trajectory, not by batch_size/num_generations — confirmed empirically
+    # under the 30GB operator-mandated cap (peak ~21-23GB regardless).
+    # Restored towards the original diversity-per-prompt target.
     num_generations: int = 8
     clip_epsilon: float = 0.2
     beta: float = 0.01
     learning_rate: float = 5e-6
-    batch_size: int = 8
+    batch_size: int = 4
     ppo_epochs: int = 4
     max_grad_norm: float = 0.5
 
@@ -132,9 +156,9 @@ class GRPOConfig:
     eval_depth: int = 15
 
     # Training loop
-    num_training_steps: int = 500_000
-    logging_steps: int = 10
-    save_steps: int = 100
+    num_training_steps: int = 300
+    logging_steps: int = 1
+    save_steps: int = 25
     eval_steps: int = 200
     save_total_limit: int = 5
 
@@ -149,22 +173,36 @@ class GRPOConfig:
     confidence_temp: float = 1.0  # Temperature for confidence-based weighting
     entropy_beta: float = 0.01  # Entropy bonus coefficient (anti-imitation)
     min_eval_cp: int = 0  # Minimum Stockfish eval to accept a trace
-    trace_path: str = ""  # Path to pre-generated traces (JSONL); empty = generate on-the-fly
+    # Pre-generated via /tmp/pregen_luffy_traces.py (same FEN sampling: same
+    # data_path/seed/buffer_capacity) so GRPO startup doesn't block for hours
+    # re-running Stockfish depth-18 analysis on 10k positions.
+    trace_path: str = "data/luffy_traces.jsonl"
     buffer_capacity: int = 10_000  # Experience buffer capacity
 
     # Multi-ply rollouts — reward is tied to actually winning the game,
     # not just per-move soundness. See reward.py's WIN/LOSS/DRAW_REWARD.
     rollout_full_game_ratio: float = 0.5  # fraction played to conclusion vs. capped
     rollout_max_plies: int = 10  # ply cap for the capped share
-    opponent_depth: int = 3  # shallow Stockfish opponent during rollouts
+    # Annealed 3 -> 6 over the first 300 post-SFT RL steps (see
+    # opponent_depth_anneal_steps docstring); now held steady at 6, the
+    # value reached at the end of that anneal.
+    opponent_depth: int = 6  # shallow Stockfish opponent during rollouts
+    opponent_depth_final: int = 6  # annealed target (see docstring); = opponent_depth -> no-op
+    opponent_depth_anneal_steps: int = 0  # 0 = constant opponent_depth (no anneal)
 
     # Rollout move vetting — a shallow classical search corrects legal-but-
     # losing moves made *during* a rollout (never the seed first move; see
-    # docstring). See rollout.py's _vet_move.
+    # docstring). See rollout.py's _vet_move. Strengthened after diagnosing
+    # the step-600 checkpoint's losses vs Stockfish depth 8: every sampled
+    # loss traced back to one simple mid-game blunder (a piece hung to an
+    # immediate recapture, e.g. moving a knight onto a square covered by a
+    # bishop) rather than a slow positional decline — exactly the class of
+    # mistake this vetting targets, so depth/time/margin are tightened to
+    # catch more of them during training.
     rollout_vet_enabled: bool = True
-    rollout_vet_depth: int = 4
-    rollout_vet_time_limit: float = 0.3
-    rollout_vet_margin: float = 50.0  # centipawns
+    rollout_vet_depth: int = 6
+    rollout_vet_time_limit: float = 0.6
+    rollout_vet_margin: float = 30.0  # centipawns
 
     # General
     seed: int = 42

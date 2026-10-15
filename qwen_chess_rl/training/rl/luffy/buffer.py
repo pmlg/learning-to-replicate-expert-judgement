@@ -104,7 +104,15 @@ class ExperienceBuffer:
                 - 'on_policy_count': int
                 - 'off_policy_count': int
         """
-        n_off = int(batch_size * self.trace_ratio)
+        # Stochastic rounding: at small batch_size, flooring (e.g.
+        # int(2 * 0.3) = 0) always samples zero off-policy traces, silently
+        # zeroing out LUFFY guidance regardless of trace_ratio. Rounding
+        # the fractional remainder probabilistically keeps the *expected*
+        # off-policy fraction equal to trace_ratio across steps.
+        n_off_exact = batch_size * self.trace_ratio
+        n_off = int(n_off_exact)
+        if self._rng.random() < (n_off_exact - n_off):
+            n_off += 1
         n_on = batch_size - n_off
 
         # Sample on-policy

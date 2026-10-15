@@ -68,6 +68,30 @@ def format_move_target(move: str) -> str:
     return f"{move}{EOS_TOKEN}"
 
 
+def extract_cp_target(example: dict, clip: float = 1000.0) -> float:
+    """Extract a Stockfish centipawn eval target, from the side-to-move's view.
+
+    Falls back to a clipped mate score when ``cp`` is absent — mate-in-N
+    positions are decisive, so they're mapped to the clip boundary with the
+    mating side's sign rather than dropped.
+
+    Args:
+        example: Dataset example with ``cp`` and/or ``mate``.
+        clip: Absolute value to clip the eval to (centipawns).
+
+    Returns:
+        Clipped centipawn eval (float).
+    """
+    cp = example.get("cp")
+    if cp is None:
+        mate = example.get("mate")
+        if mate is not None:
+            cp = clip if mate > 0 else -clip
+        else:
+            cp = 0.0
+    return float(max(-clip, min(clip, cp)))
+
+
 def tokenize_example(
     example: dict,
     tokenizer,
@@ -81,7 +105,9 @@ def tokenize_example(
         max_length: Maximum sequence length.
 
     Returns:
-        Tokenized example with input_ids, attention_mask, and labels.
+        Tokenized example with input_ids, attention_mask, labels, and
+        cp_target (Stockfish eval of the position, for the auxiliary
+        HL-Gauss value loss — see train.py).
     """
     fen = str(example.get("fen", ""))
     move = extract_best_move(example)
@@ -111,6 +137,7 @@ def tokenize_example(
     ]
 
     tokens["labels"] = labels
+    tokens["cp_target"] = extract_cp_target(example)
     return tokens
 
 

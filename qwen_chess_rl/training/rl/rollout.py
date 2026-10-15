@@ -145,15 +145,17 @@ def play_rollout(
     cfg: GRPOConfig,
     stockfish_path: str | None = None,
     max_plies: int | None = None,
+    opponent_depth: int | None = None,
 ) -> RolloutResult | None:
     """Play out a game starting with ``first_move`` from ``fen``.
 
     The model plays whichever side is to move at ``fen`` throughout the
-    rollout; a shallow Stockfish (``cfg.opponent_depth``) plays the other
-    side. An illegal move by the model at any point — including the
-    caller-supplied ``first_move`` — ends the rollout as a loss, except for
-    the very first move: an illegal first move returns None so the caller
-    can apply its existing illegal-move penalty instead.
+    rollout; a shallow Stockfish (``opponent_depth``, defaulting to
+    ``cfg.opponent_depth``) plays the other side. An illegal move by the
+    model at any point — including the caller-supplied ``first_move`` —
+    ends the rollout as a loss, except for the very first move: an illegal
+    first move returns None so the caller can apply its existing
+    illegal-move penalty instead.
 
     Args:
         model: Current policy model, used to generate the model's own
@@ -166,11 +168,15 @@ def play_rollout(
         stockfish_path: Path to Stockfish (auto-detected if None).
         max_plies: Ply cap (both sides combined), or None to play to a
             natural conclusion.
+        opponent_depth: Override for the opponent's Stockfish search depth
+            (e.g. a per-step value from an annealed curriculum). Defaults
+            to ``cfg.opponent_depth`` when not given.
 
     Returns:
         RolloutResult, or None if ``first_move`` is illegal.
     """
     stockfish_path = stockfish_path or _find_stockfish()
+    opponent_depth = cfg.opponent_depth if opponent_depth is None else opponent_depth
 
     board = chess.Board(fen)
     try:
@@ -235,7 +241,7 @@ def play_rollout(
                 result.own_moves.append(candidates)
                 board.push(next_move)
             else:
-                opponent_move = _select_opponent_move(board, engine, cfg.opponent_depth)
+                opponent_move = _select_opponent_move(board, engine, opponent_depth)
                 board.push(opponent_move)
 
             result.num_plies += 1

@@ -101,6 +101,11 @@ def prepare_luffy_buffer(cfg: GRPOConfig) -> ExperienceBuffer:
     )
 
     if cfg.trace_path:
+        # Traces loaded from disk are expected to already carry rewards
+        # (as written by this module's own compute_trace_rewards call
+        # below, or an equivalent pre-generation pass) — recomputing them
+        # here would silently redo a full Stockfish pass over every trace
+        # (tens of minutes to hours) on every GRPO startup for no reason.
         traces = load_traces_from_jsonl(cfg.trace_path)
         logger.info("Loaded %d off-policy traces from %s", len(traces), cfg.trace_path)
     else:
@@ -123,10 +128,9 @@ def prepare_luffy_buffer(cfg: GRPOConfig) -> ExperienceBuffer:
             logger.warning("No FENs found for trace generation — LUFFY buffer will be empty.")
             traces = []
 
-    # Compute rewards for all traces
-    if traces:
-        logger.info("Computing rewards for %d traces ...", len(traces))
-        compute_trace_rewards(traces, eval_depth=cfg.eval_depth)
+        if traces:
+            logger.info("Computing rewards for %d traces ...", len(traces))
+            compute_trace_rewards(traces, eval_depth=cfg.eval_depth)
 
     buffer.add_off_policy_batch(traces)
     logger.info("LUFFY buffer ready: %d off-policy traces", buffer.num_off_policy)

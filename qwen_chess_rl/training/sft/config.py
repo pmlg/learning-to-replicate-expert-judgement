@@ -44,7 +44,7 @@ class SFTConfig:
     """
 
     # Model
-    model_name: str = "Qwen/Qwen3.5-0.8B"
+    model_name: str = "Qwen/Qwen3.5-9B"
     lora_r: int = 32
     lora_alpha: int = 32
     lora_dropout: float = 0.1
@@ -64,24 +64,38 @@ class SFTConfig:
 
     # Training
     output_dir: str = "checkpoints/sft"
-    batch_size: int = 6
-    gradient_accumulation_steps: int = 8
+    batch_size: int = 2
+    gradient_accumulation_steps: int = 24
     learning_rate: float = 2e-4
     lr_scheduler_type: str = "cosine"
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    num_train_epochs: int = 4
+    num_train_epochs: int = 1
     max_steps: int = -1  # -1 means use epochs
     logging_steps: int = 25
-    save_steps: int = 500
-    eval_steps: int = 100
+    save_steps: int = 1000
+    eval_steps: int = 1000
     save_total_limit: int = 3
 
-    # Precision
-    bf16: bool = False
-    fp16: bool = True
+    # Precision — RTX 5090 (Blackwell) natively supports bf16; it has a wider
+    # exponent range than fp16 so training stays stable without loss scaling.
+    bf16: bool = True
+    fp16: bool = False
     gradient_checkpointing: bool = True
     optim: str = "adamw_torch"
+
+    # Auxiliary value loss — the Lichess dataset already carries a Stockfish
+    # `cp` eval per position, otherwise unused by SFT. Predicting it from the
+    # same trunk the policy head reads from (à la AlphaZero's value head)
+    # gives the model an auxiliary chess-understanding signal on top of pure
+    # move-imitation. Uses hl-gauss-pytorch's histogram loss (Imani et al.,
+    # https://arxiv.org/abs/1806.04613) rather than MSE regression, which the
+    # HL-Gauss paper (https://arxiv.org/abs/2403.03950) found regresses
+    # scalar targets more accurately for this kind of value prediction.
+    use_hl_gauss_aux_loss: bool = True
+    hl_gauss_aux_weight: float = 0.1
+    hl_gauss_num_bins: int = 128
+    hl_gauss_cp_clip: float = 1000.0
 
     # Data
     seed: int = 42
@@ -89,7 +103,7 @@ class SFTConfig:
     # Use the full dataset — this task needs broad exposure to board
     # patterns; a 50k slice (2.5% of 1.96M) left the model undertrained.
     max_train_samples: int = 500_000
-    max_eval_samples: int = 2_000
+    max_eval_samples: int = 500
     # Real examples (prompt + move + EOS) are ~90 tokens; 512 wasted ~5.5x
     # compute on padding every example to a fixed length. 128 covers actual
     # content with margin and lets the full dataset run in the same budget.

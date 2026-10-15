@@ -313,6 +313,8 @@ class TestGrpoTrajectoryLossStability:
         return model, ref_model, tokenizer
 
     def test_long_trajectory_produces_a_finite_loss_and_gradients(self):
+        import math
+
         import torch
 
         from qwen_chess_rl.data.dataset import format_fen_prompt
@@ -330,11 +332,15 @@ class TestGrpoTrajectoryLossStability:
         )
         cfg = GRPOConfig(max_length=256, clip_epsilon=0.2, beta=0.01)
 
-        loss = grpo_trajectory_loss(model, ref_model, tokenizer, [traj], [1.5], cfg)
+        # grpo_trajectory_loss backwards internally (see its docstring), so
+        # gradients should already be populated by the time it returns.
+        loss_value, num_samples = grpo_trajectory_loss(
+            model, tokenizer, [traj], [1.5], cfg, ref_model=ref_model,
+        )
 
-        assert loss is not None
-        assert torch.isfinite(loss)
-        loss.backward()
+        assert num_samples == 1
+        assert loss_value is not None
+        assert math.isfinite(loss_value)
         lora_grads = [p.grad for n, p in model.named_parameters() if "lora" in n and p.requires_grad]
         assert all(g is not None for g in lora_grads)
         assert all(torch.isfinite(g).all() for g in lora_grads)

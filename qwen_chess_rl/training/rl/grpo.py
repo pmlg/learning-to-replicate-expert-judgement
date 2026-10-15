@@ -96,6 +96,7 @@ def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
         model_kwargs = {
             "device_map": "auto",
             "trust_remote_code": True,
+            "dtype": torch.bfloat16,
         }
         if quantization_config:
             model_kwargs["quantization_config"] = quantization_config
@@ -122,6 +123,7 @@ def load_rl_model(cfg: GRPOConfig, trainable: bool = True):
         model_kwargs = {
             "device_map": "auto",
             "trust_remote_code": True,
+            "dtype": torch.bfloat16,
         }
         if quantization_config:
             model_kwargs["quantization_config"] = quantization_config
@@ -242,12 +244,13 @@ def compute_advantages(
 
 def grpo_trajectory_loss(
     model,
-    ref_model,
     tokenizer,
     trajectories: list,
     advantages: list[float],
     cfg: GRPOConfig,
-) -> torch.Tensor | None:
+    ref_model=None,
+    loss_scale: float = 1.0,
+) -> tuple[float | None, int]:
     """Compute the GRPO loss over full multi-ply rollout trajectories.
 
     Generalizes the original single-move GRPO loss to credit an entire
@@ -274,21 +277,54 @@ def grpo_trajectory_loss(
     beyond the averaging fix above) is skipped with a warning rather than
     allowed to poison the whole batch's loss.
 
+    Backwards through each trajectory's loss immediately after computing
+    it, rather than summing every trajectory into one tensor before a
+    single final backward() call. Full-game rollouts can span 60-100+
+    plies, each needing its own kept-alive forward pass for the ratio
+    computation above; retaining dozens of those graphs simultaneously
+    (one per trajectory in the batch) is what exhausted VRAM at 9B scale
+    — backwarding per-trajectory frees each graph before the next
+    trajectory's forward pass begins. Gradients accumulate in
+    ``model.parameters()[*].grad`` exactly as they would from one combined
+    backward() call; the caller still does a single optimizer.step().
+
     Args:
-        model: Current policy model.
-        ref_model: Reference model (SFT checkpoint, frozen).
+        model: Current policy model (PEFT-wrapped in the common case).
         tokenizer: HuggingFace tokenizer.
         trajectories: One rollout.RolloutResult per sampled candidate.
         advantages: Group-normalized advantage per trajectory (same order
             and length as trajectories).
         cfg: GRPO configuration.
+        ref_model: Optional separate frozen reference model. Only needed
+            when ``model`` isn't a PEFT model (no LoRA adapter to disable) —
+            with LoRA, the reference forward pass instead runs through
+            ``model.disable_adapter()`` so the frozen base weights double as
+            the reference without a second full model copy in VRAM (at 9B
+            in bf16 that second copy would be another ~18GB).
+        loss_scale: Multiplies each trajectory's loss before backward (e.g.
+            ``1 - luffy_alpha`` so this on-policy term and LUFFY's
+            off-policy term combine to the documented weighted sum even
+            though each is backwarded independently rather than summed
+            into one tensor first).
 
     Returns:
-        Scalar loss tensor, or ``None`` when no valid trajectories exist.
+        ``(mean loss value across valid trajectories, count of valid
+        trajectories)`` — ``(None, 0)`` when no valid trajectories exist.
+        The mean is for logging only; gradients have already been applied.
     """
-    total_loss: torch.Tensor | None = None
+    num_trajectories = len(trajectories)
+    if num_trajectories == 0:
+        return None, 0
+
+    total_loss_value = 0.0
     num_samples = 0
     device = next(model.parameters()).device
+    use_disable_adapter = ref_model is None and hasattr(model, "disable_adapter")
+    if ref_model is None and not use_disable_adapter:
+        raise ValueError(
+            "grpo_trajectory_loss needs either a PEFT model (for "
+            "disable_adapter) or an explicit ref_model."
+        )
 
     for traj, adv in zip(trajectories, advantages):
         gen_log_probs_sum: torch.Tensor | None = None
@@ -309,16 +345,38 @@ def grpo_trajectory_loss(
                 [prompt_inputs["attention_mask"][0], torch.ones_like(move_ids)], dim=-1,
             )
 
-            outputs = model(full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0))
-            log_probs = F.log_softmax(outputs.logits[:, :-1, :], dim=-1)
+            # Gradient-checkpointed: each ply is an independent forward pass
+            # (fresh FEN -> fresh tokenization, no shared KV-cache across
+            # plies), so checkpointing it discards its activations
+            # immediately rather than keeping them alive until this
+            # trajectory's single backward() call below — without this, a
+            # long full-game trajectory (60-100+ plies) keeps every one of
+            # its plies' activations resident simultaneously, which is what
+            # was driving peak VRAM at 9B scale, independent of batch_size.
+            def _policy_logits(input_ids, attention_mask):
+                return model(input_ids, attention_mask=attention_mask).logits
+
+            policy_logits = torch.utils.checkpoint.checkpoint(
+                _policy_logits,
+                full_input.unsqueeze(0),
+                full_mask.unsqueeze(0),
+                use_reentrant=False,
+            )
+            log_probs = F.log_softmax(policy_logits[:, :-1, :], dim=-1)
             ply_log_probs = log_probs[:, -len(move_ids):, :].gather(
                 2, move_ids.unsqueeze(0).unsqueeze(-1)
             ).squeeze(-1).sum()
 
             with torch.no_grad():
-                ref_outputs = ref_model(
-                    full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0),
-                )
+                if use_disable_adapter:
+                    with model.disable_adapter():
+                        ref_outputs = model(
+                            full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0),
+                        )
+                else:
+                    ref_outputs = ref_model(
+                        full_input.unsqueeze(0), attention_mask=full_mask.unsqueeze(0),
+                    )
                 ref_log_probs = F.log_softmax(ref_outputs.logits[:, :-1, :], dim=-1)
                 ply_ref_log_probs = ref_log_probs[:, -len(move_ids):, :].gather(
                     2, move_ids.unsqueeze(0).unsqueeze(-1)
@@ -359,13 +417,19 @@ def grpo_trajectory_loss(
         if not torch.isfinite(sample_loss):
             logger.warning("Non-finite loss for a trajectory; skipping it.")
             continue
-        total_loss = sample_loss if total_loss is None else total_loss + sample_loss
+
+        # Backward now, while this trajectory's graph is the only one
+        # alive — normalized by num_trajectories (not num_samples, which
+        # isn't known until the loop finishes) so a handful of skipped
+        # trajectories don't require rescaling already-applied gradients.
+        (sample_loss * (loss_scale / num_trajectories)).backward()
+        total_loss_value += sample_loss.item()
         num_samples += 1
 
-    if total_loss is None or num_samples == 0:
-        return None
+    if num_samples == 0:
+        return None, 0
 
-    return total_loss / num_samples
+    return total_loss_value / num_samples, num_samples
 
 
 def combine_onpolicy_offpolicy_loss(
@@ -421,6 +485,29 @@ def compute_luffy_alpha(cfg: GRPOConfig, step: int) -> float:
     return cfg.luffy_alpha + frac * (cfg.luffy_alpha_final - cfg.luffy_alpha)
 
 
+def compute_opponent_depth(cfg: GRPOConfig, step: int) -> int:
+    """Compute the current rollout opponent depth under the anneal schedule.
+
+    Linearly interpolates (rounded to the nearest integer depth) from
+    ``cfg.opponent_depth`` to ``cfg.opponent_depth_final`` over
+    ``cfg.opponent_depth_anneal_steps`` steps, then holds at the final
+    value. With ``opponent_depth_anneal_steps == 0`` (default), returns
+    ``cfg.opponent_depth`` unchanged — the anneal is opt-in.
+
+    Args:
+        cfg: GRPO configuration.
+        step: Current global training step (1-indexed, as incremented in
+            the training loop).
+
+    Returns:
+        The Stockfish search depth to use for the rollout opponent this step.
+    """
+    if cfg.opponent_depth_anneal_steps <= 0:
+        return cfg.opponent_depth
+    frac = min(step / cfg.opponent_depth_anneal_steps, 1.0)
+    return round(cfg.opponent_depth + frac * (cfg.opponent_depth_final - cfg.opponent_depth))
+
+
 def train(cfg: GRPOConfig):
     """Run the full GRPO training loop.
 
@@ -441,12 +528,20 @@ def train(cfg: GRPOConfig):
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load model and reference model
+    # Load the policy model. When it's a PEFT/LoRA model, the frozen base
+    # weights double as the reference model via disable_adapter() inside
+    # grpo_trajectory_loss — a second full model copy would cost another
+    # ~18GB of VRAM at 9B scale for no benefit, since the "reference" and
+    # "policy" share the exact same base weights anyway. Only load a
+    # genuinely separate reference model for a non-PEFT (full fine-tune)
+    # checkpoint, where there's no adapter to disable.
     model, tokenizer = load_rl_model(cfg, trainable=True)
-    ref_model, _ = load_rl_model(cfg, trainable=False)
-    ref_model.eval()
-    for param in ref_model.parameters():
-        param.requires_grad = False
+    ref_model = None
+    if not hasattr(model, "disable_adapter"):
+        ref_model, _ = load_rl_model(cfg, trainable=False)
+        ref_model.eval()
+        for param in ref_model.parameters():
+            param.requires_grad = False
 
     # Load raw FENs (do not reuse SFT token tensors — GRPO needs prompt/FEN alignment)
     dataset = FenPromptDataset(
@@ -513,6 +608,7 @@ def train(cfg: GRPOConfig):
             # eventual outcome (win/loss/draw), not just this one move.
             # A random share of candidates play to a natural conclusion;
             # the rest are capped at rollout_max_plies for cost.
+            current_opponent_depth = compute_opponent_depth(cfg, global_step + 1)
             trajectories = []
             all_rewards = []
             for fen, moves in zip(fens_batch, all_moves):
@@ -526,6 +622,7 @@ def train(cfg: GRPOConfig):
                         try:
                             traj = play_rollout(
                                 model, tokenizer, fen, move_uci, cfg, max_plies=max_plies,
+                                opponent_depth=current_opponent_depth,
                             )
                         except Exception as exc:
                             # A rollout crash (e.g. the Stockfish subprocess
@@ -560,12 +657,24 @@ def train(cfg: GRPOConfig):
                         flat_trajectories.append(traj)
                         flat_advantages.append(adv)
 
-            loss = grpo_trajectory_loss(
-                model, ref_model, tokenizer, flat_trajectories, flat_advantages, cfg,
+            # current_luffy_alpha is needed as grpo_trajectory_loss's
+            # loss_scale, so it's computed before that call rather than
+            # alongside the LUFFY block below (it only depends on the step
+            # number, not on anything computed in between).
+            current_luffy_alpha = compute_luffy_alpha(cfg, global_step + 1) if luffy_buffer is not None else 0.0
+
+            # Backwards per-trajectory internally (see docstring) rather
+            # than returning one tensor for a single backward() call here —
+            # full-game trajectories are too numerous/long to keep every
+            # one's graph alive simultaneously at 9B scale.
+            onpolicy_loss_value, onpolicy_num_samples = grpo_trajectory_loss(
+                model, tokenizer, flat_trajectories, flat_advantages, cfg,
+                ref_model=ref_model, loss_scale=(1 - current_luffy_alpha),
             )
 
             # --- LUFFY off-policy loss term ---
             luffy_metrics = {}
+            luffy_loss_value = None
             if luffy_buffer is not None and luffy_buffer.num_off_policy > 0:
                 from qwen_chess_rl.training.rl.luffy.training import luffy_offpolicy_loss
 
@@ -573,11 +682,9 @@ def train(cfg: GRPOConfig):
                     model, tokenizer, luffy_buffer, cfg, model.device,
                 )
                 luffy_loss_tensor = luffy_result.get("loss_tensor")
-                current_luffy_alpha = compute_luffy_alpha(cfg, global_step + 1)
-                if luffy_loss_tensor is not None:
-                    loss = combine_onpolicy_offpolicy_loss(
-                        loss, luffy_loss_tensor, current_luffy_alpha
-                    )
+                if luffy_loss_tensor is not None and torch.isfinite(luffy_loss_tensor):
+                    (current_luffy_alpha * luffy_loss_tensor).backward()
+                    luffy_loss_value = luffy_loss_tensor.item()
                 luffy_metrics = {
                     "luffy_is_ratio": luffy_result.get("mean_is_ratio", 0.0),
                     "luffy_confidence": luffy_result.get("mean_confidence_weight", 0.0),
@@ -588,7 +695,7 @@ def train(cfg: GRPOConfig):
 
             global_step += 1
 
-            if loss is None or not torch.is_tensor(loss):
+            if onpolicy_num_samples == 0 and luffy_loss_value is None:
                 logger.warning(
                     "Step %s: no differentiable GRPO loss (empty generations); skipping update",
                     global_step,
@@ -596,20 +703,10 @@ def train(cfg: GRPOConfig):
                 optimizer.zero_grad(set_to_none=True)
                 continue
 
-            if not torch.isfinite(loss):
-                # Defense in depth: per-trajectory non-finite ratios/losses are
-                # already skipped inside grpo_trajectory_loss, but guard the
-                # final combined loss too (e.g. after LUFFY blending) — a NaN
-                # update here would permanently corrupt the model's weights.
-                logger.warning(
-                    "Step %s: non-finite loss (%s); skipping update",
-                    global_step, loss.item(),
-                )
-                optimizer.zero_grad(set_to_none=True)
-                continue
-
-            # Backward pass
-            loss.backward()
+            # Non-finite trajectories/LUFFY batches are already filtered
+            # out before their individual backward() calls above, so
+            # whatever gradients are in .grad at this point are safe to
+            # apply.
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
             optimizer.step()
             optimizer.zero_grad()
@@ -618,9 +715,17 @@ def train(cfg: GRPOConfig):
             if global_step % cfg.logging_steps == 0:
                 all_rs = [r for group in all_rewards for r in group]
                 mean_reward = np.mean(all_rs) if all_rs else 0
+                # Combined value is for display only — gradients from each
+                # term were already applied via their own backward() calls.
+                display_loss = 0.0
+                if onpolicy_num_samples:
+                    display_loss += (1 - current_luffy_alpha) * onpolicy_loss_value
+                if luffy_loss_value is not None:
+                    display_loss += current_luffy_alpha * luffy_loss_value
                 log_msg = (
                     f"Step {global_step}/{cfg.num_training_steps} | "
-                    f"Loss: {loss.item():.4f} | Mean Reward: {mean_reward:.2f}"
+                    f"Loss: {display_loss:.4f} | Mean Reward: {mean_reward:.2f} | "
+                    f"Opponent depth: {current_opponent_depth}"
                 )
                 if luffy_metrics:
                     log_msg += (
@@ -652,6 +757,7 @@ def main():
     parser = argparse.ArgumentParser(description="GRPO train chess-playing model")
     parser.add_argument("--config", type=str, help="YAML config file")
     parser.add_argument("--sft-checkpoint", type=str, default=None)
+    parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--data-path", type=str, default=None)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -689,6 +795,24 @@ def main():
             f"0 disables annealing (default: {GRPOConfig.luffy_alpha_anneal_steps})."
         ),
     )
+    parser.add_argument(
+        "--opponent-depth-final",
+        type=int,
+        default=None,
+        help=(
+            "Target rollout opponent Stockfish depth to anneal towards over "
+            f"--opponent-depth-anneal-steps (default: {GRPOConfig.opponent_depth_final})."
+        ),
+    )
+    parser.add_argument(
+        "--opponent-depth-anneal-steps",
+        type=int,
+        default=None,
+        help=(
+            "Steps over which the rollout opponent depth linearly anneals to "
+            f"opponent_depth_final. 0 disables annealing (default: {GRPOConfig.opponent_depth_anneal_steps})."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = GRPOConfig()
@@ -702,6 +826,8 @@ def main():
 
     if args.sft_checkpoint is not None:
         cfg.sft_checkpoint = args.sft_checkpoint
+    if args.output_dir is not None:
+        cfg.output_dir = args.output_dir
     if args.data_path is not None:
         cfg.data_path = args.data_path
     if args.steps is not None:
@@ -716,6 +842,10 @@ def main():
         cfg.luffy_alpha_final = args.luffy_alpha_final
     if args.luffy_alpha_anneal_steps is not None:
         cfg.luffy_alpha_anneal_steps = args.luffy_alpha_anneal_steps
+    if args.opponent_depth_final is not None:
+        cfg.opponent_depth_final = args.opponent_depth_final
+    if args.opponent_depth_anneal_steps is not None:
+        cfg.opponent_depth_anneal_steps = args.opponent_depth_anneal_steps
 
     train(cfg)
 

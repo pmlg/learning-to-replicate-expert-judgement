@@ -17,7 +17,11 @@ import pytest
 import torch
 
 from qwen_chess_rl.training.rl.config import GRPOConfig
-from qwen_chess_rl.training.rl.grpo import combine_onpolicy_offpolicy_loss, compute_luffy_alpha
+from qwen_chess_rl.training.rl.grpo import (
+    combine_onpolicy_offpolicy_loss,
+    compute_luffy_alpha,
+    compute_opponent_depth,
+)
 from qwen_chess_rl.training.rl.luffy.buffer import ExperienceBuffer
 from qwen_chess_rl.training.rl.luffy.is_weights import (
     compute_is_weights,
@@ -116,18 +120,25 @@ class TestExperienceBuffer:
         # Regression test: luffy_offpolicy_loss used to pre-multiply
         # cfg.batch_size by cfg.trace_ratio before calling buffer.sample(),
         # which internally re-applies trace_ratio — at the GRPOConfig
-        # defaults (batch_size=8, trace_ratio=0.3) that double application
-        # floored to int(int(8*0.3)*0.3) = 0, silently disabling the LUFFY
-        # off-policy loss at the default config. The correct call passes
+        # defaults that double application floored to zero, silently
+        # disabling the LUFFY off-policy loss. The correct call passes
         # cfg.batch_size straight through.
+        #
+        # At the current cfg (batch_size=2, trace_ratio=0.3), even a single
+        # (correct) multiplication floors to int(0.6) = 0 every time, so
+        # sample() uses stochastic rounding (see ExperienceBuffer.sample) to
+        # keep the expected off-policy fraction correct across calls —
+        # sampled repeatedly here rather than asserted on one draw.
         cfg = GRPOConfig()
         buf = ExperienceBuffer(capacity=100, trace_ratio=cfg.trace_ratio, seed=cfg.seed)
         for i in range(20):
             buf.add_off_policy(
                 OffPolicyTrace(fen=f"fen_off_{i}", action="e2e4", reward=float(i))
             )
-        sample = buf.sample(batch_size=cfg.batch_size)
-        assert sample["off_policy_count"] > 0
+        total_off_policy = sum(
+            buf.sample(batch_size=cfg.batch_size)["off_policy_count"] for _ in range(50)
+        )
+        assert total_off_policy > 0
 
     def test_trace_ratio_zero(self):
         buf = ExperienceBuffer(capacity=100, trace_ratio=0.0, seed=42)
@@ -347,3 +358,25 @@ class TestComputeLuffyAlpha:
     def test_can_anneal_upward(self):
         cfg = GRPOConfig(luffy_alpha=0.2, luffy_alpha_final=0.9, luffy_alpha_anneal_steps=10)
         assert compute_luffy_alpha(cfg, 5) == pytest.approx(0.2 + 0.5 * (0.9 - 0.2))
+
+
+class TestComputeOpponentDepth:
+    """Test the rollout opponent-depth anneal schedule."""
+
+    def test_disabled_returns_constant(self):
+        cfg = GRPOConfig(opponent_depth=3, opponent_depth_final=8, opponent_depth_anneal_steps=0)
+        assert compute_opponent_depth(cfg, 1) == 3
+        assert compute_opponent_depth(cfg, 10_000) == 3
+
+    def test_starts_at_initial_value(self):
+        cfg = GRPOConfig(opponent_depth=3, opponent_depth_final=8, opponent_depth_anneal_steps=100)
+        assert compute_opponent_depth(cfg, 0) == 3
+
+    def test_midpoint_is_halfway_rounded(self):
+        cfg = GRPOConfig(opponent_depth=3, opponent_depth_final=8, opponent_depth_anneal_steps=100)
+        assert compute_opponent_depth(cfg, 50) == round(3 + 0.5 * (8 - 3))
+
+    def test_holds_at_final_value_past_anneal_steps(self):
+        cfg = GRPOConfig(opponent_depth=3, opponent_depth_final=8, opponent_depth_anneal_steps=100)
+        assert compute_opponent_depth(cfg, 100) == 8
+        assert compute_opponent_depth(cfg, 10_000) == 8
