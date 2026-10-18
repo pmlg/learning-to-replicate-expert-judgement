@@ -113,37 +113,36 @@ class GRPOConfig:
             default — see evaluation/stockfish_eval.py).
     """
 
-    # Model
-    sft_checkpoint: str = "checkpoints/sft-9b/final"
-    output_dir: str = "checkpoints/rl-9b"
+    # Model — switched to the Qwen3-1.7B SFT checkpoint (operator goal
+    # change from Qwen3.5-9B; see sft/config.py).
+    sft_checkpoint: str = "checkpoints/sft-1.7b/final"
+    output_dir: str = "checkpoints/rl-1.7b"
 
     # Data — separate from SFT's data_path; the two stages can use
     # different processed datasets if desired.
     data_path: str = "data/processed"
     max_train_samples: int = 500_000  # -1 = use full set
 
-    # Quantization — the frozen base model is quantized to 4-bit NF4 to keep
-    # total VRAM under the operator-mandated 25GB budget at 9B scale: bf16
-    # weights alone (~18GB) plus fixed CUDA/allocator overhead already sat
-    # at the 25GB ceiling before any trajectory-loss computation, regardless
-    # of batch_size/num_generations. Only the base weights are quantized;
-    # the LoRA adapter itself still trains in bf16.
-    use_4bit: bool = True
+    # Quantization — unnecessary at 1.7B scale: full bf16 weights (~3.4GB)
+    # plus LoRA/activations/optimizer state fit comfortably under the
+    # operator's VRAM budget without it (quantization was only needed to
+    # fit the 9B model).
+    use_4bit: bool = False
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
 
     # GRPO hyperparameters
-    # grpo_trajectory_loss backwards each trajectory immediately rather
-    # than accumulating the whole batch's graphs (see grpo.py), so peak
-    # VRAM is dominated by the quantized base weights + one in-flight
-    # trajectory, not by batch_size/num_generations — confirmed empirically
-    # under the 30GB operator-mandated cap (peak ~21-23GB regardless).
-    # Restored towards the original diversity-per-prompt target.
-    num_generations: int = 8
+    # Raised to use the operator's full ~25GB VRAM budget at 1.7B scale
+    # (batch_size=8/num_generations=8 only used ~11GB) — generate_moves's
+    # batched model.generate() call is the part that actually scales with
+    # batch_size*num_generations (grpo_trajectory_loss backwards each
+    # trajectory individually, so that phase stays flat regardless).
+    # Verified empirically via a real smoke test before the long run.
+    num_generations: int = 16
     clip_epsilon: float = 0.2
     beta: float = 0.01
     learning_rate: float = 5e-6
-    batch_size: int = 4
+    batch_size: int = 32
     ppo_epochs: int = 4
     max_grad_norm: float = 0.5
 
@@ -183,11 +182,11 @@ class GRPOConfig:
     # not just per-move soundness. See reward.py's WIN/LOSS/DRAW_REWARD.
     rollout_full_game_ratio: float = 0.5  # fraction played to conclusion vs. capped
     rollout_max_plies: int = 10  # ply cap for the capped share
-    # Annealed 3 -> 6 over the first 300 post-SFT RL steps (see
-    # opponent_depth_anneal_steps docstring); now held steady at 6, the
-    # value reached at the end of that anneal.
-    opponent_depth: int = 6  # shallow Stockfish opponent during rollouts
-    opponent_depth_final: int = 6  # annealed target (see docstring); = opponent_depth -> no-op
+    # Reset to the original starting value for the fresh Qwen3-1.7B policy
+    # (the 9B run's depth-6 resting value reflected curriculum progress
+    # specific to that now-abandoned run, not a property of the task).
+    opponent_depth: int = 3  # shallow Stockfish opponent during rollouts
+    opponent_depth_final: int = 3  # annealed target (see docstring); = opponent_depth -> no-op
     opponent_depth_anneal_steps: int = 0  # 0 = constant opponent_depth (no anneal)
 
     # Rollout move vetting — a shallow classical search corrects legal-but-

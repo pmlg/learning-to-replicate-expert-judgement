@@ -43,8 +43,15 @@ class SFTConfig:
         report_to: Logging destination (wandb, tensorboard, none).
     """
 
-    # Model
-    model_name: str = "Qwen/Qwen3.5-9B"
+    # Model — switched from Qwen3.5-9B to Qwen3-1.7B (operator goal change):
+    # dramatically smaller, so training fits comfortably in bf16 without
+    # quantization and runs much faster per step, at the cost of raw
+    # capacity. Qwen3-1.7B is a standard (non-hybrid-attention) Qwen3
+    # architecture — none of the Qwen3.5 hybrid-attention special-casing
+    # elsewhere in this codebase (get_base_hidden_size's nested text_config
+    # fallback, flash-linear-attention) is needed for it, but those paths
+    # degrade gracefully to the plain case so nothing had to change there.
+    model_name: str = "Qwen/Qwen3-1.7B"
     lora_r: int = 32
     lora_alpha: int = 32
     lora_dropout: float = 0.1
@@ -63,9 +70,13 @@ class SFTConfig:
     bnb_4bit_use_double_quant: bool = True
 
     # Training
-    output_dir: str = "checkpoints/sft"
-    batch_size: int = 2
-    gradient_accumulation_steps: int = 24
+    output_dir: str = "checkpoints/sft-1.7b"
+    # At 1.7B, per-device activations are tiny relative to the 9B recipe's
+    # batch_size=2 — raised to 16 (with accumulation cut 24->3, keeping the
+    # same effective batch size of 48) purely for throughput; VRAM headroom
+    # was confirmed empirically before launching the real run.
+    batch_size: int = 16
+    gradient_accumulation_steps: int = 3
     learning_rate: float = 2e-4
     lr_scheduler_type: str = "cosine"
     warmup_steps: int = 100

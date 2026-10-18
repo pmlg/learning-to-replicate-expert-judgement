@@ -9,19 +9,15 @@
 # different attempts).
 set -u
 
-BASE_DIR="checkpoints/rl-9b"
-SFT_CHECKPOINT="checkpoints/sft-9b/final"
-# Steps 1-300: fixed depth-3 opponent. Steps 300-600: opponent annealed
-# 3 -> 6. Both phases plateaued at ~1600 Elo (0/20 vs depth-8 Stockfish,
-# 0 draws even with search-vetted "hybrid" eval). Diagnosing the step-600
-# checkpoint's losses showed every one traced back to a single simple
-# mid-game blunder (a hung piece to an immediate recapture), not slow
-# positional decline — so this next 600-step phase holds the opponent
-# steady at depth 6 (now config.py's default) and instead strengthens
-# rollout_vet_depth/time_limit/margin (also now in config.py) to correct
-# more of those blunders during training, reinforcing the policy away
-# from them via the vetted-move imitation signal (see rollout.py).
-TOTAL_STEPS=1200
+BASE_DIR="checkpoints/rl-1.7b"
+SFT_CHECKPOINT="checkpoints/sft-1.7b/final"
+# Fresh GRPO run for the Qwen3-1.7B SFT checkpoint (operator goal change
+# from Qwen3.5-9B — the 9B run plateaued at ~1600 Elo after 1200 steps; see
+# checkpoints/rl-9b/train.log for that history). First phase: 300 steps,
+# matching the 9B recipe's initial phase size — config.py already carries
+# forward the opponent-curriculum and strengthened blunder-vetting settings
+# validated during 9B diagnosis, reset to their fresh-run starting values.
+TOTAL_STEPS=300
 MAX_RETRIES=60
 LOG="$BASE_DIR/train.log"
 mkdir -p "$BASE_DIR"
