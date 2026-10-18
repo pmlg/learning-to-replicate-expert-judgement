@@ -68,3 +68,4 @@ secrets.yaml
 graphify-out/
 
 evaluation_results/
+.claude/dat341-notes/
