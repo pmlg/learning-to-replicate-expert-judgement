@@ -719,6 +719,7 @@ Detailed documentation is available in the `docs/` directory:
 - [Evaluation](docs/evaluation.md)
 - [Deployment Guide](docs/deployment.md)
 - [Architecture Overview](docs/architecture.md)
+- [GRPO + On-Policy Distillation explainer notebook](notebooks/grpo_and_onpolicy_distillation.ipynb) ([how to run](notebooks/README.md))
 
 ---
 
