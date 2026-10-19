@@ -53,7 +53,7 @@ Thumbs.db
 mlruns/
 wandb/
 
-# Frontend
+# Fronten
 web/frontend/node_modules/
 web/frontend/dist/
 web/frontend/build/
@@ -69,3 +69,5 @@ graphify-out/
 
 evaluation_results/
 .claude/dat341-notes/
+checkpoints/
+checkpoints
