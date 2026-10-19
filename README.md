@@ -629,6 +629,21 @@ bash scripts/train_sft.sh --config config.yaml
 
 ---
 
+## 🗣 Talk materials (PMLG, 22 Oct 2026)
+
+The **notebook is the talk's live material** — it runs offline on CPU
+(Qwen3-0.6B) with no trained checkpoint required:
+
+- [`notebooks/grpo_and_onpolicy_distillation.ipynb`](notebooks/grpo_and_onpolicy_distillation.ipynb)
+  — GRPO loss on real Stockfish scores → group-relative advantage →
+  on-policy distillation, step by step, including a
+  ["why this is very hard"](notebooks/grpo_and_onpolicy_distillation.ipynb)
+  section citing Queen (arXiv:2610.03695).
+- Deck: `talk/pmlg_chess_rl_talk_final.pptx` (26 slides, 40:00 cue sheet in
+  `talk/cue_sheet.md`, rehearsal script in `talk/rehearsal_script.md`,
+  verified claim sources in `talk/SOURCES.md`, results charts in
+  `talk/charts/`).
+
 ## 📈 Results
 
 Benchmark from [`evaluation_results/comparison.json`](evaluation_results/comparison.json)
