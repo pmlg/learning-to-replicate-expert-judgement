@@ -1,0 +1,241 @@
+{
+  "slide_size": "16:9",
+  "slides": [
+    {"layout": "title",
+     "title": "Teaching LLMs Expert Judgment: A Chess RL Case Study",
+     "subtitle": "Ibrahim El-Fayoumi · Perth Machine Learning Group · Microsoft, 100 St Georges Terrace, Perth",
+     "notes": "[0:00-1:30] Welcome. One sentence up front: expert judgment is tacit, so it has to be trained into a model, not prompted into it. Tonight: chess with Qwen3-1.7B as the controlled testbed, then the Bridgewater result that shows the same recipe works at production scale."},
+
+    {"layout": "title_content",
+     "title": "The hook: prompting can't transfer judgment",
+     "bullets": [
+       "Frontier LLMs, six routine investor tasks, prompt that just states the task: ~50% accuracy",
+       "Experts rewrite the prompts, automatic prompt optimisation on top: mid-70s - still below the 80% trust threshold",
+       "\"An explicit prompt can only convey the intuition an expert is able to put into words\"",
+       "The judgments that matter most are the hardest to articulate",
+       {"text": "Source: Thinking Machines Lab x Bridgewater AIA Labs, 'Learning to Replicate Expert Judgment in Financial Tasks', 30 Jun 2026", "level": 1, "italic": true, "size": 14}
+     ],
+     "notes": "[1:30-4:00] Start with the strongest evidence, not ours. Frontier models averaged ~50% (Opus 4.6: 47.2, Gemini 3.1 Pro: 50.1, GPT 5.4: 47.2...). Expert prompts lifted to mid-70s (77.2, 74.3, 75.8, 78.2, 78.0) - coin flip to C+ student. Prompt optimisation hit a wall. Quote is from the TML/Bridgewater post."},
+
+    {"layout": "section",
+     "title": "The thesis",
+     "notes": "[4:00-4:30] Transition."},
+
+    {"layout": "title_content",
+     "title": "Thesis: tacit judgment is trained in, not prompted",
+     "bullets": [
+       "Expert judgment is tacit - it lives in thousands of small decisions, not in a written rubric",
+       "Fine-tuning on expert signal lets the model develop its own judgment",
+       "A small model trained on expert signal can beat a much larger frontier model",
+       "We need a testbed where 'expert judgment' is objective, cheap, and measurable",
+       {"text": "That testbed is chess: Qwen3-1.7B trained against Stockfish", "bold": true}
+     ],
+     "notes": "[4:30-6:30] Chess gives us a perfect expert (Stockfish ~3200 Elo), an exact reward, and infinite labelled positions. Financial judgment at Bridgewater is the noisy real-world version of the same problem. Everything we learn about reward design and credit assignment transfers."},
+
+    {"layout": "section",
+     "title": "Setup: chess as the controlled testbed",
+     "notes": "[6:30-7:00] Transition to setup."},
+
+    {"layout": "title_content",
+     "title": "Setup: Qwen3-1.7B + Stockfish reward",
+     "bullets": [
+       "Policy: Qwen3-1.7B - small enough to train on modest compute, large enough to produce legal play",
+       "Teacher/reward: Stockfish 17 - an expert ~1000+ Elo above anything the policy can reach",
+       "Pipeline: SFT on game transcripts -> GRPO with engine reward -> off-policy extension (LUFFY)",
+       "Evaluated on held-out positions (n=1000) + full games vs Stockfish and vs random"
+     ],
+     "notes": "[7:00-9:00] Deliberately the smallest credible model. Question we're really asking: how small can a model be and still reason? Three training stages mirror the talk structure."},
+
+    {"layout": "title_content",
+     "title": "How we measure",
+     "bullets": [
+       "Legal-move rate: can the model play the game at all? (formats, state tracking)",
+       "Median centipawn loss (CPL): quality of each move vs Stockfish's best",
+       {"text": "Use the MEDIAN, not the mean - the mean is dominated by rare blunders (std ~2900 cp)", "bold": true},
+       "Game outcomes vs Stockfish (20 games) and vs random (10 games); avg game length",
+       "Estimated Elo"
+     ],
+     "notes": "[9:00-10:30] Explain CPL briefly: 0 = engine's move, 100 cp = roughly a pawn of lost value. Legal-move rate is the floor: an LLM that emits 'e4 e5 Nf3' as one token or hallucinates squares fails here. Our headline floor stat: 100% legal moves on 1000 held-out positions."},
+
+    {"layout": "section",
+     "title": "Stage 1 - SFT on game transcripts",
+     "notes": "[10:30-11:00] Transition."},
+
+    {"layout": "title_content",
+     "title": "Stage 1 - SFT: what the model learns",
+     "bullets": [
+       "Data: game transcripts (FEN state -> move in SAN), generated with Stockfish",
+       "Learns: move format, board syntax, opening patterns, 'what a reasonable move looks like'",
+       "Does NOT learn: why a move is good - no signal beyond imitation",
+       "Result: 100% legal-move rate on the test set - the model can play",
+       "But: median CPL 81 cp, loses 0-20 vs Stockfish (20/20), 0 wins vs random (9 draws, 1 loss)"
+     ],
+     "notes": "[11:00-13:00] SFT buys competence, not judgment. The odd result to flag honestly: 9/10 draws vs random. Likely draw-adjudication / move-limit artifacts - we show the numbers as they are. Data format note: transcripts teach the token patterns of chess; the model still has no internal critic."},
+
+    {"layout": "section",
+     "title": "Stage 2 - GRPO with Stockfish as the reward",
+     "notes": "[13:00-13:30] Transition."},
+
+    {"layout": "title_content",
+     "title": "Stage 2 - GRPO: reward from the engine",
+     "bullets": [
+       "GRPO: critic-free policy gradient - sample G moves per state, reward each, normalise within the group",
+       "Reward: Stockfish evaluation of the chosen move (centipawn signal), plus game outcome",
+       "Advantage is relative: 'better than the group's average move', not 'objectively good'",
+       "No value network to train - fits our compute budget",
+       "Reward shaping: legality penalty, engine eval, game result"
+     ],
+     "notes": "[13:30-15:30] Keep GRPO math light here (the notebook does the step-by-step). Key intuition: within a group of sampled moves, the model learns which of ITS OWN candidate moves the engine prefers. That is expert signal, per decision."},
+
+    {"layout": "title_content",
+     "title": "Failure modes: sparse reward, brutal credit assignment",
+     "bullets": [
+       "One terminal reward spread over ~30 decisions per game - credit assignment is the core difficulty",
+       "Long-horizon strategy: a good move's value may only appear 20 plies later",
+       "Strategy has no token signature - nothing in the trace says 'this was the strategic move'",
+       "Reward hacking pressure: engine-eval shaping can be gamed locally (shallow tactics)",
+       "Off-policy drift: by the time a game finishes, the policy that played it is stale"
+     ],
+     "notes": "[15:30-18:00] This is the honest heart of the talk. Compare: a chat model gets per-token feedback; our policy gets one scalar after ~30 decisions. That is why RL from game outcomes alone stalls - and it motivates both per-move engine shaping and the distillation stage."},
+
+    {"layout": "title_content",
+     "title": "Strategic vs tactical: why chess is hard for a 1.7B model",
+     "bullets": [
+       "Tactics (forks, pins): local, 2-4 plies, pattern-shaped - SFT handles these",
+       "Strategy (piece activity, pawn structure, plans): global, 20+ plies, no local pattern",
+       "Branching: ~35 legal moves/ply - the horizon problem explodes combinatorially",
+       "A frontier model 'knows' chess commentary; a 1.7B must learn search-free evaluation",
+       "Humans also can't articulate strategic judgment - exactly the tacit-knowledge problem"
+     ],
+     "notes": "[18:00-20:00] Tie back to the thesis: strategic judgment in chess is tacit even for humans - club players can't write down why a move 'feels' right. That's the same structure as Bridgewater investors filtering documents."},
+
+    {"layout": "title_content",
+     "title": "GRPO results - the honest read",
+     "tables": [{"left": 0.6, "top": 1.8, "width": 8.8, "height": 3.2,
+       "rows": [["Metric (1000 held-out positions)", "SFT", "GRPO (RL)"],
+                ["Legal-move rate", "100%", "100%"],
+                ["Median centipawn loss", "81.0", "90.0"],
+                ["Mean centipawn loss (blunder-dominated)", "1045.7", "1022.7"],
+                ["vs Stockfish (20 games)", "0-20", "0-20"],
+                ["Avg game length (plies)", "24.3", "27.7"],
+                ["vs random (10 games)", "0W / 9D / 1L", "0W / 9D / 1L"]]}],
+     "bullets": [{"text": "Sources: evaluation_results/comparison.json (canonical, frozen 2026-10-19); benchmark_results.json is a stale duplicate rl/final run (29.9 plies, median CPL 102.5) and is not quoted", "level": 1, "italic": true, "size": 13}],
+     "notes": "[20:00-22:30] Numbers are real, from the repo. Say it straight: RL did NOT move the headline evals - median CPL slightly up (81->90), still 0-20 vs Stockfish. What changed: longer games (24.3 -> 27.7 plies) - the policy survives longer, plays differently. Note: benchmark_results.json is a stale duplicate rl/final run - canonical file frozen as comparison.json (2026-10-19); no discrepancy discussion needed."},
+
+    {"layout": "title_content",
+     "title": "So did RL teach anything new?",
+     "bullets": [
+       "Headline evals flat - but behaviour changed: longer games, different move distributions",
+       "RL sharpened and stabilised SFT behaviour rather than adding new capability (so far)",
+       "Consistent with the literature: RL mostly reweights what SFT already knows",
+       "The gap is signal density, not model capacity - one reward over ~30 decisions",
+       {"text": "Which sets up stage 3: denser signal from the same compute", "bold": true}
+     ],
+     "notes": "[22:30-24:30] This is the 'RL: new capabilities or sharpened SFT?' key question answered for OUR case: sharpening. Bridge to LUFFY/on-policy distillation: the problem isn't the model, it's the reward density."},
+
+    {"layout": "section",
+     "title": "Stage 3 - off-policy learning: LUFFY and distillation",
+     "notes": "[24:30-25:00] Transition."},
+
+    {"layout": "title_content",
+     "title": "LUFFY: off-policy guidance from a stronger teacher",
+     "bullets": [
+       "LUFFY: mix a strong teacher's traces into GRPO rollouts, with policy-aware down-weighting",
+       "Learns from the expert even where the policy's own samples are all bad",
+       "Regularisation keeps the mixture on-policy (importance-based advantage adjustment)",
+       "Extra learning from limited compute - we don't need more engines, we need better use of the one we have"
+     ],
+     "notes": "[25:00-27:00] Be explicit about repo status: our LUFFY eval is not yet run - the comparison-table cell is empty (audit 2026-10-18). Present LUFFY as the designed next stage, with the TML/Bridgewater ablation as external evidence the recipe class works."},
+
+    {"layout": "title_content",
+     "title": "Why on-policy distillation helps",
+     "bullets": [
+       "Exposure bias: off-policy training never fixes the states the policy actually reaches",
+       "Dense per-token signal vs one terminal reward - credit assignment becomes trivial",
+       "The student's own rollouts stay on-policy; only the TARGET comes from the teacher",
+       "Cheaper than sampling from a frontier teacher at every state"
+     ],
+     "notes": "[27:00-29:00] The key mental model: RL asks 'which of my moves was good?' (sparse, noisy). Distillation asks 'match the teacher's distribution HERE' (dense, per-token, on the states I actually visit). Examples: SFT model sees only Stockfish games, not its own blunders; OPD trains on the model's own states with teacher targets."},
+
+    {"layout": "section",
+     "title": "Evidence at scale: Thinking Machines x Bridgewater",
+     "notes": "[29:00-29:30] Transition to the payoff."},
+
+    {"layout": "title_content",
+     "title": "The same recipe, at production scale",
+     "bullets": [
+       "Bridgewater AIA Labs + Thinking Machines Lab, published 30 Jun 2026",
+       "Task: six document-triage tasks from real investor workflows (relevancy, labelling, truncation)",
+       "Base: Qwen3-235B fine-tuned on Tinker - GRPO start, then interleaved batching + CISPO + on-policy distillation",
+       "Expert labels only where needed: contested examples routed to investors for re-review",
+       "Result: fine-tuned open model beats every frontier model tested - at 13.8x lower inference cost per task"
+     ],
+     "notes": "[29:30-31:30] This is our thesis proven outside chess. Walk the pipeline: contractor labels failed (models trained on them performed poorly) - the fix was routing contested examples to real investors. Note the overlap with our recipe: GRPO + on-policy distillation, same component names."},
+
+    {"layout": "title_content",
+     "title": "Bridgewater numbers",
+     "charts": [{"type": "bar", "left": 0.6, "top": 1.7, "width": 8.8, "height": 4.4,
+       "title": "Average accuracy on six financial triage tasks",
+       "categories": ["Qwen base", "Qwen + GRPO", "Best frontier (expert prompt)", "Bridgewater fine-tune"],
+       "series": {"Average accuracy %": [44.8, 73.5, 78.2, 84.7]}}],
+     "bullets": [{"text": "84.7% vs 78.2% = 29.8% fewer errors; 13.8x lower inference cost per task. Source: TML/Bridgewater post, 30 Jun 2026 (thinkingmachines.ai)", "level": 1, "italic": true, "size": 13}],
+     "notes": "[31:30-33:00] Read the bars: 44.8 base -> 73.5 after GRPO alone (the biggest single jump, same as our SFT->RL story) -> 84.7 after the full recipe. Their ablations: removing interleaved batching drops to 72.2%; removing OPD drops to 72.4%; CISPO+asymmetric clips 74.6%. A 13.8x cost cut with better accuracy is the production argument."},
+
+    {"layout": "title_content",
+     "title": "Caveats (say them before the audience does)",
+     "bullets": [
+       "Company-run internal evaluation - not an independent public benchmark",
+       "Six tasks, private test set cleared for release; generalisation beyond them unproven",
+       "Cost figure covers inference only - expert labelling and training cost not included",
+       "Frontier models not improving fast on this axis: GPT 5.4 cost 43% more than 5.2 for marginal accuracy gain",
+       "Same discipline applies to OUR numbers: small n, one seed, self-reported"
+     ],
+     "notes": "[33:00-34:30] Credibility slide. Both the Bridgewater result and our chess numbers are self-reported on internal evals. State limits, then move to takeaways. This honesty is itself part of the talk's argument about expert judgment."},
+
+    {"layout": "title_content",
+     "title": "Key questions this testbed answers",
+     "bullets": [
+       {"text": "How small can a model be and still reason?", "bold": true},
+       {"text": "1.7B reaches 100% legal play and club-level tactics after SFT; strategic play needs better signal, not more parameters", "level": 1},
+       {"text": "Does RL teach new capabilities or sharpen SFT?", "bold": true},
+       {"text": "In our run: sharpening (longer games, stable behaviour), evals flat - consistent with TML/Bridgewater where the recipe, not scale, moved the number", "level": 1},
+       {"text": "Reward from an engine ~1000 Elo stronger - what goes wrong?", "bold": true},
+       {"text": "Reward signal too sparse in game outcome; per-move engine shaping helps but invites local (tactical) reward hacking; the stronger the teacher, the more its best moves are unreachable-by-imitation", "level": 1}
+     ],
+     "notes": "[34:30-37:00] The three questions from the abstract, answered with our data plus the external evidence. Keep each to ~45 seconds."},
+
+    {"layout": "title_content",
+     "title": "Takeaways",
+     "bullets": [
+       "Expert judgment is tacit - prompting plateaus (~50-78%), fine-tuning on expert signal crosses the trust threshold (84.7%)",
+       "Chess is a clean rehearsal space: real reward design, real credit-assignment pain, honest metrics",
+       "Small models + expert signal beat large models + prompts, at a fraction of the cost",
+       "On-policy distillation turns a sparse terminal reward into dense per-token learning",
+       "The bottleneck is signal quality, not model size"
+     ],
+     "notes": "[37:00-38:30] Five lines, each proven earlier in the deck. Slow down here."},
+
+    {"layout": "title_content",
+     "title": "Demo & materials",
+     "bullets": [
+       "Notebook: qwen-chess-rl - GRPO loss & on-policy distillation, step by step (DAT-341)",
+       "Demo: full game, trained policy vs Stockfish 17, per-ply eval + PGN (offline-capable)",
+       "Repo: github.com/deep-science-ai/qwen-chess-rl",
+       {"text": "[QR code placeholder - final slide, add before dry run]", "level": 1, "italic": true, "size": 13},
+       {"text": "Demo fallback: recorded game + figure committed in the notebook (no live GPU needed)", "level": 1, "size": 13}
+     ],
+     "notes": "[38:30-39:30] Decision still open: live vs recorded demo (ticket task). The notebook §6 runs offline from committed outputs - the safe default. Re-run on the training box so outputs show the trained policy, not the base-model fallback."},
+
+    {"layout": "title_content",
+     "title": "Thank you - questions?",
+     "bullets": [
+       "Repo: github.com/deep-science-ai/qwen-chess-rl",
+       "References:",
+       {"text": "Thinking Machines Lab x Bridgewater AIA Labs - 'Learning to Replicate Expert Judgment in Financial Tasks' (30 Jun 2026), thinkingmachines.ai/news/learning-to-replicate-expert-judgment-in-financial-tasks", "level": 1, "size": 14},
+       {"text": "LUFFY: off-policy RL with mixing guidance (arXiv 2504.14945)", "level": 1, "size": 14},
+       {"text": "On-policy distillation - Thinking Machines Lab blog", "level": 1, "size": 14},
+       "Ibrahim El-Fayoumi - Perth Machine Learning Group"
+     ],
+     "notes": "[39:30-40:00+] Q&A. Likely questions: why chess (objective reward), why not Leela (we study LLM training, not chess engines), will the recipe transfer (Bridgewater evidence), what's next (LUFFY eval on our repo)."}
+  ]
+}

@@ -2,7 +2,7 @@
 
 **Train Qwen (default: Qwen3-4B) to play chess via Supervised Fine-Tuning (SFT) and Reinforcement Learning (GRPO)**
 
-This project implements an end-to-end training pipeline for fine-tuning a **Qwen** model (default **`Qwen/Qwen3-4B`**) to play chess, using ~2 million labelled chess positions from Lichess. It includes:
+This project implements an end-to-end training pipeline for fine-tuning a **Qwen** model (default **`Qwen/Qwen3-4B`**) to play chess, using ~2 million labelled chess positions from Lichess. The published benchmark results in [Results](#-results) were produced with **`Qwen/Qwen3-1.7B`**. It includes:
 
 - 📥 **Data Pipeline** — Download, filter, and sample 2M chess positions from the [Lichess chess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) dataset
 - 🎯 **SFT Training** — Supervised fine-tuning with QLoRA to predict best moves from FEN positions
@@ -79,7 +79,7 @@ flowchart TD
     Data --> SFT --> GRPO
 ```
 
-</details> (docs: replace ASCII training pipeline with Mermaid PNG)
+</details>
 
 ### Reward Function
 
@@ -440,7 +440,7 @@ default to **`Qwen/Qwen3-4B`**. Your LoRA adapters under
 **Terminal 1 — backend** (loads the checkpoint; first start downloads the base model if needed):
 
 ```bash
-cd ~/workspace/qwen-chess-rl
+cd qwen-chess-rl
 source .venv/bin/activate
 
 # SFT model, or use checkpoints/rl/final after GRPO
@@ -460,7 +460,7 @@ curl -s http://localhost:8000/health
 **Terminal 2 — frontend**:
 
 ```bash
-cd ~/workspace/qwen-chess-rl/web/frontend
+cd qwen-chess-rl/web/frontend
 npm install
 npm run dev
 ```
@@ -646,15 +646,22 @@ bash scripts/evaluate.sh checkpoints/sft/final --compare checkpoints/rl/final
 | vs Stockfish (d8) W–D–L | 0–0–20 | 0–0–20 |
 | Win rate vs Stockfish | 0% | 0% |
 | Loss rate vs Stockfish | 100% | 100% |
-| Avg game length (plies) | 44.7 | 47.5 |
+| Avg game length (plies) | 24.3 | 27.7 |
 | Estimated Elo (from match) | 1600 | 1600 |
-| vs Random W–D–L | 0–9–1 | 0–6–4 |
-| Draw rate vs random | 90% | 60% |
+| vs Random W–D–L | 0–9–1 | 0–9–1 |
+| Draw rate vs random | 90% | 90% |
 | Win rate vs random | 0% | 0% |
+| Legal move % (1000 test FENs) | 100% | 100% |
+| Median centipawn loss (test set) | 81.0 | 90.0 |
+| Mean centipawn loss (test set) | 1045.7 | 1022.7 |
 
 Neither checkpoint scored a win against Stockfish at depth 8. GRPO games lasted slightly
-longer on average (47.5 vs 44.7 plies). Against a random-move opponent, SFT drew more
-often (9/10 vs 6/10); neither model won a game.
+longer on average (27.7 vs 24.3 plies). Against a random-move opponent both models drew
+9/10 games and won none.
+
+The mean centipawn loss is dominated by rare blunders (std ≈ 2900), so the median is the
+representative figure: GRPO did not improve it (81.0 → 90.0). Legal-move rate stayed at
+100% throughout.
 
 This isn't a training-data or reward-shaping gap: `choose_uci_move` (see
 [`inference.py`](qwen_chess_rl/inference.py)) does one-shot next-token
