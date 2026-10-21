@@ -58,6 +58,14 @@ LOSS_REWARD: float = -20.0
 DRAW_REWARD: float = 0.0
 DRAW_REWARD_WHEN_LOSING: float = 10.0
 LOSING_EVAL_THRESHOLD: float = -150.0  # centipawns
+# Symmetric counterpart to DRAW_REWARD_WHEN_LOSING/LOSING_EVAL_THRESHOLD —
+# added after diagnosing Qwen3-1.7B rollouts where the policy shuffled a
+# single piece back and forth from a clearly winning position until the
+# repetition/move-limit draw kicked in. Without this, a draw from a won
+# position scored the same flat DRAW_REWARD as a draw from a balanced one,
+# so nothing discouraged squandering a win into a draw.
+DRAW_REWARD_WHEN_WINNING: float = -10.0
+WINNING_EVAL_THRESHOLD: float = 150.0  # centipawns
 
 
 def compute_episode_reward(
@@ -86,7 +94,10 @@ def compute_episode_reward(
             ``outcome`` is 'draw' — if the starting position was already
             clearly lost (below LOSING_EVAL_THRESHOLD), winning wasn't a
             realistic objective, so salvaging a draw is rewarded well
-            instead of just "less bad than losing".
+            instead of just "less bad than losing". Symmetrically, if the
+            starting position was already clearly winning (above
+            WINNING_EVAL_THRESHOLD), the draw is penalized — the policy had
+            a win available and gave it up.
         cutoff_eval: Centipawn evaluation of the position at the ply cap,
             from the policy's perspective. Only used when ``outcome`` is
             None (capped) — converted to a win-probability-based reward.
@@ -104,6 +115,8 @@ def compute_episode_reward(
     if outcome == "draw":
         if starting_eval is not None and starting_eval < LOSING_EVAL_THRESHOLD:
             return DRAW_REWARD_WHEN_LOSING
+        if starting_eval is not None and starting_eval > WINNING_EVAL_THRESHOLD:
+            return DRAW_REWARD_WHEN_WINNING
         return DRAW_REWARD
     # Capped (no natural conclusion).
     if cutoff_eval is None:

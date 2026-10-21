@@ -11,13 +11,18 @@ set -u
 
 BASE_DIR="checkpoints/rl-1.7b"
 SFT_CHECKPOINT="checkpoints/sft-1.7b/final"
-# Fresh GRPO run for the Qwen3-1.7B SFT checkpoint (operator goal change
-# from Qwen3.5-9B — the 9B run plateaued at ~1600 Elo after 1200 steps; see
-# checkpoints/rl-9b/train.log for that history). First phase: 300 steps,
-# matching the 9B recipe's initial phase size — config.py already carries
-# forward the opponent-curriculum and strengthened blunder-vetting settings
-# validated during 9B diagnosis, reset to their fresh-run starting values.
-TOTAL_STEPS=300
+# Phase 1 (steps 1-300, fixed depth-3 opponent) finished at ~1600 Elo,
+# matching the 9B run's first-phase plateau. Diagnosing vs-Random draws
+# found the model repeatedly shuffling a piece back and forth from clearly
+# winning positions until the move-limit draw kicked in — compute_episode_reward
+# gave that the same flat DRAW_REWARD as a draw from a balanced position, so
+# nothing discouraged squandering a win (see DRAW_REWARD_WHEN_WINNING in
+# reward.py, just added). This next 300-step phase trains with that reward
+# fix active, plus the opponent-depth anneal 3 -> 6 that helped structure
+# the 9B run's second phase.
+TOTAL_STEPS=600
+OPPONENT_DEPTH_FINAL=6
+OPPONENT_DEPTH_ANNEAL_STEPS=300
 MAX_RETRIES=60
 LOG="$BASE_DIR/train.log"
 mkdir -p "$BASE_DIR"
@@ -86,6 +91,8 @@ while [ "$retry" -lt "$MAX_RETRIES" ]; do
     --sft-checkpoint "$ckpt" \
     --steps "$remaining" \
     --output-dir "$attempt_dir" \
+    --opponent-depth-final "$OPPONENT_DEPTH_FINAL" \
+    --opponent-depth-anneal-steps "$OPPONENT_DEPTH_ANNEAL_STEPS" \
     >> "$LOG" 2>&1
   exit_code=$?
 

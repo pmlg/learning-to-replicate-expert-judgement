@@ -20,10 +20,12 @@ from qwen_chess_rl.training.rl.config import GRPOConfig
 from qwen_chess_rl.training.rl.reward import (
     DRAW_REWARD,
     DRAW_REWARD_WHEN_LOSING,
+    DRAW_REWARD_WHEN_WINNING,
     LEGAL_MOVE_BONUS,
     LOSING_EVAL_THRESHOLD,
     LOSS_REWARD,
     WIN_REWARD,
+    WINNING_EVAL_THRESHOLD,
     _find_stockfish,
     compute_episode_reward,
 )
@@ -111,6 +113,19 @@ class TestComputeEpisodeReward:
     def test_win_and_loss_are_unaffected_by_starting_eval(self):
         assert compute_episode_reward("win", starting_eval=-900.0) == WIN_REWARD
         assert compute_episode_reward("loss", starting_eval=-900.0) == LOSS_REWARD
+
+    def test_draw_squandered_from_winning_start_is_penalized(self):
+        assert compute_episode_reward("draw", starting_eval=900.0) == DRAW_REWARD_WHEN_WINNING
+        reward = compute_episode_reward("draw", starting_eval=WINNING_EVAL_THRESHOLD + 1)
+        assert reward == DRAW_REWARD_WHEN_WINNING
+
+    def test_draw_reward_boundary_is_strictly_above_winning_threshold(self):
+        # Exactly at the threshold is not "clearly winning" yet.
+        assert compute_episode_reward("draw", starting_eval=WINNING_EVAL_THRESHOLD) == DRAW_REWARD
+
+    def test_draw_reward_when_winning_is_worse_than_a_normal_draw_but_not_a_loss(self):
+        assert DRAW_REWARD_WHEN_WINNING < DRAW_REWARD
+        assert DRAW_REWARD_WHEN_WINNING > LOSS_REWARD
 
 
 class TestPlayRolloutStructure:

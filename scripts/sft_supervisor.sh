@@ -7,7 +7,7 @@
 # script is a much simpler retry loop around that.
 set -u
 
-OUTPUT_DIR="checkpoints/sft-1.7b"
+OUTPUT_DIR="checkpoints/sft-1.7b-3ep"
 MAX_RETRIES=30
 LOG="$OUTPUT_DIR/train.log"
 mkdir -p "$OUTPUT_DIR"

@@ -38,6 +38,7 @@ tokenizer = None
 MODEL_LOADED = False
 MODEL_NAME = None
 CHECKPOINT_PATH = None
+hybrid_player = None
 
 
 class GameState:
@@ -84,19 +85,18 @@ class GameState:
         }
 
     def get_ai_move(self) -> Optional[str]:
-        """Get the model's recommended move.
+        """Get the AI's move: the model's suggestion, vetted by a classical
+        search safety net (see ``HybridPlayer``) so the model's blunders get
+        caught while its style still comes through on sound moves.
 
         Returns:
             UCI move string, or None if model is not loaded.
         """
-        global model, tokenizer
-
-        if not MODEL_LOADED:
+        if not MODEL_LOADED or hybrid_player is None:
             return None
 
-        from qwen_chess_rl.inference import choose_uci_move
-
-        return choose_uci_move(model, tokenizer, self.board, temperature=0.0)
+        move = hybrid_player.choose_move(self.board)
+        return move.uci() if move is not None else None
 
     def _update_pgn(self):
         """Update the PGN string from move history."""
@@ -218,7 +218,7 @@ def load_model(checkpoint_path: str):
     Args:
         checkpoint_path: Path to the model checkpoint.
     """
-    global model, tokenizer, MODEL_LOADED, MODEL_NAME, CHECKPOINT_PATH
+    global model, tokenizer, MODEL_LOADED, MODEL_NAME, CHECKPOINT_PATH, hybrid_player
     import json
 
     import torch
@@ -263,6 +263,13 @@ def load_model(checkpoint_path: str):
 
     CHECKPOINT_PATH = str(ckpt)
     MODEL_LOADED = True
+
+    from qwen_chess_rl.evaluation.stockfish_eval import HybridPlayer
+
+    # max_depth=6/time_limit=3.0 (vs the class's 4/1.0 defaults) measured
+    # meaningfully stronger, longer-surviving play in benchmarking — worth
+    # the extra per-move latency for a live demo opponent.
+    hybrid_player = HybridPlayer(model, tokenizer, temperature=0.1, max_depth=6, time_limit=3.0)
     logger.info("Model loaded successfully (%s).", MODEL_NAME)
 
 

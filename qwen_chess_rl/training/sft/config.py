@@ -70,7 +70,10 @@ class SFTConfig:
     bnb_4bit_use_double_quant: bool = True
 
     # Training
-    output_dir: str = "checkpoints/sft-1.7b"
+    # New output dir (not checkpoints/sft-1.7b) — the 1-epoch SFT run there
+    # is already the base of the live web demo's RL checkpoint; this
+    # experiment must not touch it while it's still serving traffic.
+    output_dir: str = "checkpoints/sft-1.7b-3ep"
     # At 1.7B, per-device activations are tiny relative to the 9B recipe's
     # batch_size=2 — raised to 16 (with accumulation cut 24->3, keeping the
     # same effective batch size of 48) purely for throughput; VRAM headroom
@@ -81,7 +84,12 @@ class SFTConfig:
     lr_scheduler_type: str = "cosine"
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    num_train_epochs: int = 1
+    # Raised from 1: the RL-trained checkpoints never escaped the same
+    # losing-everything floor even pre-RL (the SFT baseline itself lost
+    # 0/20 vs a heavily weakened Stockfish — see evaluation_results/
+    # comparison), suggesting 1 epoch over 500k positions left the
+    # foundation undertrained rather than RL being the bottleneck.
+    num_train_epochs: int = 3
     max_steps: int = -1  # -1 means use epochs
     logging_steps: int = 25
     save_steps: int = 1000
