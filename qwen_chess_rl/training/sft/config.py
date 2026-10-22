@@ -52,6 +52,13 @@ class SFTConfig:
     # fallback, flash-linear-attention) is needed for it, but those paths
     # degrade gracefully to the plain case so nothing had to change there.
     model_name: str = "Qwen/Qwen3-1.7B"
+    # Every SFT/RL run so far only ever trained a rank-32 LoRA adapter
+    # (~2.5% of total params: 44.7M / 1.77B). Disabling this trains all
+    # 1.7B params directly, testing whether LoRA's tiny trainable
+    # subspace — not training duration or data quality (both already
+    # ruled out) — was capping how much chess strength the model could
+    # actually acquire.
+    use_lora: bool = False
     lora_r: int = 32
     lora_alpha: int = 32
     lora_dropout: float = 0.1
@@ -70,25 +77,35 @@ class SFTConfig:
     bnb_4bit_use_double_quant: bool = True
 
     # Training
-    # New output dir (not checkpoints/sft-1.7b) — the 1-epoch SFT run there
-    # is already the base of the live web demo's RL checkpoint; this
-    # experiment must not touch it while it's still serving traffic.
-    output_dir: str = "checkpoints/sft-1.7b-3ep"
-    # At 1.7B, per-device activations are tiny relative to the 9B recipe's
-    # batch_size=2 — raised to 16 (with accumulation cut 24->3, keeping the
-    # same effective batch size of 48) purely for throughput; VRAM headroom
-    # was confirmed empirically before launching the real run.
-    batch_size: int = 16
-    gradient_accumulation_steps: int = 3
-    learning_rate: float = 2e-4
+    # Full fine-tuning experiment: neither the original 1-epoch nor the
+    # 3-epoch LoRA SFT baseline could draw even once against a heavily
+    # weakened Stockfish, ruling out "undertrained" as the cause. This
+    # tests the other remaining hypothesis — LoRA's ~2.5%-of-params
+    # trainable subspace was the actual capacity bottleneck — so output
+    # goes to its own dir, away from the checkpoint serving the live demo.
+    output_dir: str = "checkpoints/sft-1.7b-full-ft-3ep"
+    # Full fine-tuning needs far more optimizer-state memory per sample
+    # than LoRA (Adam states for all 1.7B params, not just the 44.7M LoRA
+    # ones). Fixed optimizer-state overhead dominated, not per-batch
+    # activations (batch_size 4->2 didn't move peak VRAM at all) — see
+    # the `optim` 8-bit-Adam switch below, which targets the actual
+    # bottleneck and lets batch_size go back up for throughput.
+    batch_size: int = 8
+    gradient_accumulation_steps: int = 6
+    # The first full-FT attempt at 2e-5 plateaued at train_loss~6.0 for
+    # most of the run (not still descending — a genuine stall, not just
+    # "needed more steps") versus LoRA's 2.848-3.159. Raised to 1e-4 —
+    # still below LoRA's 2e-4 but well above the stalled value — to give
+    # the full parameter space enough signal to actually move.
+    learning_rate: float = 1e-4
     lr_scheduler_type: str = "cosine"
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    # Raised from 1: the RL-trained checkpoints never escaped the same
-    # losing-everything floor even pre-RL (the SFT baseline itself lost
-    # 0/20 vs a heavily weakened Stockfish — see evaluation_results/
-    # comparison), suggesting 1 epoch over 500k positions left the
-    # foundation undertrained rather than RL being the bottleneck.
+    # Raised from 1: that run's train_loss (6.678) never came close to
+    # LoRA's (2.848-3.159), pointing at underfitting from too few gradient
+    # steps at this conservative LR rather than disproving the LoRA-
+    # capacity hypothesis — 3 epochs (matching the LoRA 3-epoch comparison)
+    # gives full fine-tuning a fair chance to actually converge.
     num_train_epochs: int = 3
     max_steps: int = -1  # -1 means use epochs
     logging_steps: int = 25
@@ -101,6 +118,10 @@ class SFTConfig:
     bf16: bool = True
     fp16: bool = False
     gradient_checkpointing: bool = True
+    # Switched back to standard fp32 Adam — the web demo is stopped now,
+    # so there's no VRAM pressure forcing 8-bit states, and fp32 removes
+    # 8-bit quantization noise as a possible contributor to the first
+    # full-FT attempt's plateau.
     optim: str = "adamw_torch"
 
     # Auxiliary value loss — the Lichess dataset already carries a Stockfish

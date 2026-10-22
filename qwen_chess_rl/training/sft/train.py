@@ -162,10 +162,18 @@ def load_model_and_tokenizer(cfg: SFTConfig):
     if cfg.use_4bit:
         model = prepare_model_for_kbit_training(model)
 
-    # Apply LoRA
-    lora_config = create_lora_config(cfg)
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    # Apply LoRA, or train every parameter directly (see use_lora docstring).
+    if cfg.use_lora:
+        lora_config = create_lora_config(cfg)
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+    else:
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        logger.info(
+            "Full fine-tuning: trainable params: %d || all params: %d || trainable%%: %.4f",
+            trainable, total, 100 * trainable / total,
+        )
 
     # Auxiliary HL-Gauss value head — a submodule of `model` so its params
     # ride along in model.parameters() (picked up by Trainer's optimizer)
