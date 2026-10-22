@@ -140,7 +140,7 @@ component breakdown.
 
 ```bash
 # Clone the repository
-git clone https://github.com/deep-science-ai/qwen-chess-rl.git
+git clone https://github.com/pmlg/qwen-chess-rl.git
 cd qwen-chess-rl
 
 # Create virtual environment
@@ -757,24 +757,3 @@ Papers describing the core techniques this project implements:
 - Silver et al., 2017 — [Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm](https://arxiv.org/abs/1712.01815) (AlphaZero; broader context for RL-trained chess play)
 
 ---
-
-## 📖 Citation
-
-```bibtex
-@software{qwen_chess_rl,
-  title = {Qwen Chess RL: Fine-tuning Qwen3-4B for Chess via SFT and GRPO},
-  author = {El Fayoumi, Ibrahim},
-  year = {2026},
-  url = {https://github.com/deep-science-ai/qwen-chess-rl}
-}
-```
-
----
-
-## 📝 License
-
-Proprietary — Copyright ©2026 DSAI. All Rights Reserved.
-
----
-
-*Built with [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [python-chess](https://python-chess.readthedocs.io/).*
